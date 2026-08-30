@@ -1,0 +1,121 @@
+#!/bin/sh
+# Keep the policy/configuration logic in Lua so it can use UCI and LuCI JSONC.
+
+LUA_CTL=/usr/libexec/nftflow/nftflowctl.lua
+CONFIG_CTL=/usr/libexec/nftflow/config.lua
+FIREWALL_CTL=/usr/libexec/nftflow/firewall.lua
+STATUS_BIN=/usr/libexec/nftflow/status-bin
+
+if [ "$1" = "run-guarded" ]; then
+    shift
+    xray_bin="$1"
+    config_file="$2"
+    asset_dir="$3"
+    child_pid=
+    stop_requested=0
+    failure_message=
+
+    set_state() {
+        state_name="$1"
+        state_pid="${2:-}"
+        state_message="${3:-}"
+        if [ -n "$state_pid" ]; then
+            /usr/bin/lua "$LUA_CTL" state "$state_name" "$state_pid" "$state_message" >/dev/null 2>&1 || true
+        else
+            /usr/bin/lua "$LUA_CTL" state "$state_name" "" "$state_message" >/dev/null 2>&1 || true
+        fi
+    }
+
+    terminate_child() {
+        [ -z "$child_pid" ] && return 0
+        if kill -0 "$child_pid" >/dev/null 2>&1; then
+            kill -TERM "$child_pid" >/dev/null 2>&1 || true
+            _wait=1
+            while [ "$_wait" -le 5 ]; do
+                kill -0 "$child_pid" >/dev/null 2>&1 || break
+                sleep 1
+                _wait=$((_wait + 1))
+            done
+            if kill -0 "$child_pid" >/dev/null 2>&1; then
+                kill -KILL "$child_pid" >/dev/null 2>&1 || true
+            fi
+        fi
+        wait "$child_pid" 2>/dev/null || true
+    }
+
+    cleanup() {
+        trap - EXIT TERM INT
+        if [ "$stop_requested" = "1" ]; then
+            /usr/bin/lua "$FIREWALL_CTL" firewall off >/dev/null 2>&1 || true
+            /usr/bin/lua "$LUA_CTL" route del >/dev/null 2>&1 || true
+        fi
+        terminate_child
+        if [ "$stop_requested" = "1" ]; then
+            set_state stopped
+        else
+            set_state failed "" "${failure_message:-Xray exited unexpectedly}"
+        fi
+    }
+
+    stop_child() {
+        stop_requested=1
+        set_state stopping "$child_pid" "stop requested"
+        terminate_child
+        exit 143
+    }
+
+    trap cleanup EXIT
+    trap stop_child TERM INT
+
+    # Keep stdout/stderr attached to the procd-managed wrapper. procd forwards
+    # both streams to logd, where they are tagged with the nftflowctl identity.
+    XRAY_LOCATION_ASSET="$asset_dir" "$xray_bin" run -c "$config_file" &
+    child_pid=$!
+    set_state starting "$child_pid" "Xray process is starting"
+    if ! kill -0 "$child_pid" >/dev/null 2>&1; then
+        wait "$child_pid" 2>/dev/null
+        child_status=$?
+        failure_message='Xray exited during startup'
+        set_state failed "$child_pid" "$failure_message"
+        [ "$child_status" -ne 0 ] || child_status=1
+        exit "$child_status"
+    fi
+
+    if firewall_output="$(/usr/bin/lua "$FIREWALL_CTL" firewall on 2>&1)"; then
+        :
+    else
+        logger -t nftflowctl "firewall startup apply failed: ${firewall_output:-unknown error}"
+    fi
+    if routing_output="$(/usr/bin/lua "$LUA_CTL" route-apply 2>&1)"; then
+        :
+    else
+        logger -t nftflowctl "routing startup apply failed: ${routing_output:-unknown error}"
+    fi
+    set_state ready "$child_pid" 'Xray process is running'
+    wait "$child_pid"
+    child_status=$?
+    failure_message="Xray exited with status $child_status"
+    exit "$child_status"
+fi
+
+case "$1" in
+    config-read|config-validate|config-validate-file|config-save|config-save-file|config-apply|config-apply-file)
+        exec /usr/bin/lua "$CONFIG_CTL" "$@"
+        ;;
+    firewall|firewall-read|firewall-validate|firewall-validate-file|firewall-save|firewall-save-file|firewall-apply|firewall-apply-file)
+        exec /usr/bin/lua "$FIREWALL_CTL" "$@"
+        ;;
+    status|health)
+        NFTFLOW_NFT_TERSE=1 PATH="$STATUS_BIN:$PATH" exec /usr/bin/lua "$LUA_CTL" "$@"
+        ;;
+    cleanup)
+        output="$(/usr/bin/lua "$LUA_CTL" "$@" 2>&1)"
+        status=$?
+        rm -f /var/run/nftflow/config.applied.json
+        rm -f /var/run/nftflow/firewall.applied.compiled.nft
+        printf '%s\n' "$output"
+        exit "$status"
+        ;;
+esac
+
+exec /usr/bin/lua "$LUA_CTL" "$@"

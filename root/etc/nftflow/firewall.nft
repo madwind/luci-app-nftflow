@@ -1,0 +1,53 @@
+table inet nftflow {
+    set nftflow_bypass4 {
+        type ipv4_addr
+        flags interval
+        auto-merge
+        elements = {
+            %geoip:private%,
+            %geoip:cn%
+        }
+    }
+    chain nftflow_prerouting {
+        type filter hook prerouting priority mangle - 1;
+        policy accept;
+        # Do not process reply direction again.
+        ct direction reply counter return
+        # Traffic already claimed by another interceptor bypasses Xray.
+        meta mark & 0x00010000 != 0 counter return
+        # Local router services, especially dnsmasq, must bypass TPROXY.
+        fib daddr type local return
+        # Always intercept DNS before local/private bypass.
+        meta l4proto {
+            tcp, udp
+        } th dport 53 counter return
+        # Local destinations bypass proxy.
+        fib daddr type local return
+        # Private/reserved destinations bypass proxy.
+        ip daddr @nftflow_bypass4 return
+        # Proxy all remaining TCP/UDP traffic.
+        meta l4proto {
+            tcp, udp
+        } meta mark set 1 tproxy to :12345 counter accept
+    }
+    chain nftflow_output {
+        type route hook output priority mangle - 1;
+        policy accept;
+        # Xray itself bypasses proxy to avoid loops.
+        meta skgid 23333 counter return
+        # DNS is handled by dnsmasq or forwarded directly; avoid dns-out recursion.
+        meta l4proto {
+            tcp, udp
+        } th dport 53 counter return
+        # Reply traffic bypasses proxy.
+        ct direction reply counter return
+        # Local destinations bypass proxy.
+        fib daddr type local return
+        # Private/reserved destinations bypass proxy.
+        ip daddr @nftflow_bypass4 return
+        # Mark all remaining locally-generated TCP/UDP traffic.
+        meta l4proto {
+            tcp, udp
+        } meta mark set 1 counter accept
+    }
+}
