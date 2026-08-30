@@ -73,9 +73,14 @@ function logDateFormatter() {
     timezone = timezone ? String(timezone).replace(/ /g, '_') : undefined;
 
     try {
-        return new Intl.DateTimeFormat(undefined, {
-            dateStyle: 'medium',
-            timeStyle: 'long',
+        return new Intl.DateTimeFormat('en-US', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hourCycle: 'h23',
             timeZone: timezone
         });
     } catch (error) {
@@ -83,18 +88,42 @@ function logDateFormatter() {
     }
 }
 
+function formatLogTimestamp(date, formatter) {
+    if (formatter && typeof formatter.formatToParts === 'function') {
+        try {
+            var values = {};
+            formatter.formatToParts(date).forEach(function(part) {
+                if (part.type !== 'literal')
+                    values[part.type] = part.value;
+            });
+
+            if (values.year && values.month && values.day && values.hour && values.minute && values.second)
+                return '%s-%s-%s %s:%s:%s'.format(
+                    values.year, values.month, values.day,
+                    values.hour, values.minute, values.second
+                );
+        } catch (error) {
+            // Fall through to the stable UTC representation below.
+        }
+    }
+
+    return date.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+function stripEmbeddedXrayTimestamp(message) {
+    return String(message || '').replace(
+        /^(nftflowctl(?:\[\d+\])?:\s*)\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+/i,
+        '$1'
+    );
+}
+
 function formatLogEntry(entry, formatter) {
-    var message = entry && entry.msg != null ? String(entry.msg) : '';
+    var message = stripEmbeddedXrayTimestamp(entry && entry.msg != null ? String(entry.msg) : '');
     var date = new Date(entry && entry.time);
     var timestamp = '';
 
-    if (!isNaN(date.getTime())) {
-        try {
-            timestamp = formatter ? formatter.format(date) : date.toLocaleString();
-        } catch (error) {
-            timestamp = date.toLocaleString();
-        }
-    }
+    if (!isNaN(date.getTime()))
+        timestamp = formatLogTimestamp(date, formatter);
 
     return timestamp ? '[' + timestamp + '] ' + message : message;
 }
