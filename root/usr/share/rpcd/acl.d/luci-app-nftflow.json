@@ -7,7 +7,7 @@
             ],
             "ubus": {
                 "log": [
-                    "read"
+                    ":subscribe"
                 ],
                 "luci.nftflow": [
                     "status",
