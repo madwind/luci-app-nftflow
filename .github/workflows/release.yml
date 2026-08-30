@@ -28,6 +28,7 @@ jobs:
       tag: ${{ steps.metadata.outputs.tag }}
       title: ${{ steps.metadata.outputs.title }}
       asset: ${{ steps.metadata.outputs.asset }}
+      manifest: ${{ steps.metadata.outputs.manifest }}
     env:
       OPENWRT_VERSION: "25.12.5"
       OPENWRT_TARGET: x86
@@ -71,8 +72,7 @@ jobs:
             exit 1
           fi
 
-          if [[ "$SOURCE_REF_TYPE" == "branch" &&
-                "$SOURCE_REF_NAME" != "master" ]]; then
+          if [[ "$SOURCE_REF_TYPE" == "branch" && "$SOURCE_REF_NAME" != "master" ]]; then
             echo "Manual releases must run from master" >&2
             exit 1
           fi
@@ -81,6 +81,7 @@ jobs:
           echo "tag=$expected_tag" >> "$GITHUB_OUTPUT"
           echo "title=luci-app-nftflow ${package_version}" >> "$GITHUB_OUTPUT"
           echo "asset=dist/luci-app-nftflow-${package_version}.apk" >> "$GITHUB_OUTPUT"
+          echo "manifest=dist/nftflow-update.json" >> "$GITHUB_OUTPUT"
 
       - name: Restore prepared OpenWrt SDK
         id: sdk-cache
@@ -133,6 +134,30 @@ jobs:
           bash -n scripts/build-apk.sh
           bash ./scripts/build-apk.sh
 
+      - name: Create update manifest
+        shell: bash
+        env:
+          VERSION: ${{ steps.metadata.outputs.version }}
+          TAG: ${{ steps.metadata.outputs.tag }}
+          ASSET: ${{ steps.metadata.outputs.asset }}
+          MANIFEST: ${{ steps.metadata.outputs.manifest }}
+        run: |
+          set -euo pipefail
+          sha256="$(sha256sum "$ASSET" | awk '{print $1}')"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg tag "$TAG" \
+            --arg asset "$(basename "$ASSET")" \
+            --arg sha256 "$sha256" \
+            '{version:$version,tag:$tag,asset:$asset,sha256:$sha256}' > "$MANIFEST"
+          jq -e \
+            --arg version "$VERSION" \
+            --arg tag "$TAG" \
+            --arg asset "$(basename "$ASSET")" \
+            --arg sha256 "$sha256" \
+            '.version == $version and .tag == $tag and .asset == $asset and .sha256 == $sha256' \
+            "$MANIFEST" >/dev/null
+
       - name: Upload release artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -140,6 +165,7 @@ jobs:
           path: |
             ${{ steps.metadata.outputs.asset }}
             ${{ steps.metadata.outputs.asset }}.sha256
+            ${{ steps.metadata.outputs.manifest }}
           if-no-files-found: error
           retention-days: 7
 
@@ -161,15 +187,25 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ needs.build-release.outputs.version }}
+          TAG: ${{ needs.build-release.outputs.tag }}
         run: |
           set -euo pipefail
           apk_path="release-artifact/luci-app-nftflow-${VERSION}.apk"
           checksum_path="$apk_path.sha256"
+          manifest_path="release-artifact/nftflow-update.json"
           test -f "$apk_path"
           test -f "$checksum_path"
+          test -f "$manifest_path"
           expected_checksum="$(awk 'NR == 1 { print $1 }' "$checksum_path")"
           actual_checksum="$(sha256sum "$apk_path" | awk '{ print $1}')"
           test "$expected_checksum" = "$actual_checksum"
+          jq -e \
+            --arg version "$VERSION" \
+            --arg tag "$TAG" \
+            --arg asset "$(basename "$apk_path")" \
+            --arg sha256 "$actual_checksum" \
+            '.version == $version and .tag == $tag and .asset == $asset and .sha256 == $sha256' \
+            "$manifest_path" >/dev/null
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
@@ -183,3 +219,4 @@ jobs:
           files: |
             release-artifact/luci-app-nftflow-${{ needs.build-release.outputs.version }}.apk
             release-artifact/luci-app-nftflow-${{ needs.build-release.outputs.version }}.apk.sha256
+            release-artifact/nftflow-update.json
