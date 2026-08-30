@@ -47,14 +47,27 @@ function run_ctl(args) {
     return run_command(command);
 }
 
-function run_geo_update(kind) {
-    return run_command(`/usr/bin/lua ${GEO_UPDATE} start ${shellquote(kind)}`);
+function run_geo_update(command, kind) {
+    let line = `/usr/bin/lua ${GEO_UPDATE} ${shellquote(command)}`;
+    if (kind) line += ` ${shellquote(kind)}`;
+    return run_command(line);
 }
 
 function run_software_update(command, kind) {
     let line = `/usr/bin/lua ${SOFTWARE_UPDATE} ${shellquote(command)}`;
     if (kind) line += ` ${shellquote(kind)}`;
     return run_command(line);
+}
+
+function merge_geo_cache(asset, cached) {
+    if (!asset || !cached) return;
+    asset.checked = cached.checked;
+    asset.check_ok = cached.check_ok;
+    asset.latest_version = cached.latest_version;
+    asset.update_available = cached.update_available;
+    asset.last_check_error = cached.last_check_error;
+    asset.last_update = cached.last_update;
+    asset.post_check_error = cached.post_check_error;
 }
 
 function weekly_geo_status() {
@@ -69,11 +82,19 @@ function weekly_geo_status() {
         scheduled = index(crontab, GEO_CRON_TAG) >= 0;
     }
 
-    if (!result.auto_update) result.auto_update = {};
-    result.auto_update.scheduled = scheduled;
-    result.auto_update.interval_days = 7;
-    result.auto_update.next_update = null;
-    result.auto_update.due = [];
+    let cached = run_geo_update('status');
+    if (cached && cached.ok === true && cached.assets && result.assets) {
+        merge_geo_cache(result.assets.geoip, cached.assets.geoip);
+        merge_geo_cache(result.assets.geosite, cached.assets.geosite);
+    }
+
+    let schedule = scheduled ? run_geo_update('next-run') : null;
+    result.auto_update = {
+        scheduled: scheduled,
+        interval_days: 7,
+        schedule: '17 4 * * 0',
+        next_update: schedule && schedule.ok === true ? schedule.next_update : null
+    };
     return result;
 }
 
@@ -171,7 +192,7 @@ const methods = {
         call: request => {
             let kind = request && request.args ? request.args.kind || '' : '';
             if (!valid_kind(kind)) return { ok: false, error: 'invalid geodata kind' };
-            return run_ctl(['geo', 'check', kind]);
+            return run_geo_update('check', kind);
         }
     },
     geo_update: {
@@ -179,7 +200,7 @@ const methods = {
         call: request => {
             let kind = request && request.args ? request.args.kind || '' : '';
             if (!valid_kind(kind)) return { ok: false, error: 'invalid geodata kind' };
-            return run_geo_update(kind);
+            return run_geo_update('start', kind);
         }
     },
     update_status: { args: {}, call: () => run_software_update('status') },

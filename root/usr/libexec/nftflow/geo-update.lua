@@ -1,6 +1,6 @@
 #!/usr/bin/lua
 -- SPDX-License-Identifier: Apache-2.0
--- GeoData updater with explicit uclient-fetch diagnostics.
+-- GeoData updater with explicit uclient-fetch diagnostics and cached checks.
 
 local jsonc = require "luci.jsonc"
 local nixio = require "nixio"
@@ -9,6 +9,7 @@ local nixio_fs = require "nixio.fs"
 local RUNTIME = "/var/run/nftflow"
 local LOG_DIR = "/var/log/nftflow"
 local UCLIENT_FETCH = "/bin/uclient-fetch"
+local CTL = "/usr/libexec/nftflow/nftflowctl"
 local DEFAULT_GEOIP_URL = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
 local DEFAULT_GEBSITE_URL = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
 local sequence = 0
@@ -16,6 +17,12 @@ local sequence = 0
 local function encode(value)
     if jsonc.stringify then return jsonc.stringify(value) end
     return jsonc.encode(value)
+end
+
+local function decode(value)
+    local decoder = jsonc.parse or jsonc.decode
+    local ok, result = pcall(decoder, value)
+    return ok and result or nil
 end
 
 local function trim(value)
@@ -125,9 +132,8 @@ end
 local function read_state(kind)
     local raw = read_file(state_path(kind))
     if not raw or trim(raw) == "" then return { kind = kind, status = "idle" } end
-    local decoder = jsonc.parse or jsonc.decode
-    local ok, value = pcall(decoder, raw)
-    if ok and type(value) == "table" then
+    local value = decode(raw)
+    if type(value) == "table" then
         value.kind = kind
         return value
     end
@@ -145,6 +151,67 @@ end
 
 local function release_version(output)
     return tostring(output or ""):match("/releases/download/([^/%s]+)/")
+end
+
+local function operation_active(state)
+    return state and (state.status == "starting" or state.status == "running") and process_alive(state.pid)
+end
+
+local function last_update_from_state(state)
+    local value = tonumber(state and state.last_update)
+    if value then return value end
+    if state and state.updated == true then return tonumber(state.finished) end
+    return nil
+end
+
+local function parse_ctl_result(output)
+    local last
+    for line in tostring(output or ""):gmatch("[^\r\n]+") do
+        line = trim(line)
+        if line ~= "" then last = line end
+    end
+    return last and decode(last) or nil
+end
+
+local function probe(kind)
+    local ok, output = exec_capture("/bin/sh " .. shellquote(CTL) .. " geo check " .. shellquote(kind))
+    local result = parse_ctl_result(output)
+    if type(result) == "table" then return result end
+    return { ok = false, kind = kind, error = ok and "GeoData check returned invalid JSON" or output }
+end
+
+local function apply_check(state, result)
+    state.checked = os.time()
+    state.check_ok = result.ok == true
+    if result.ok == true then
+        state.latest_version = result.remote_version
+        state.update_available = result.update_available
+        state.last_check_error = nil
+        state.local_version = result.local_version or state.local_version or state.source_version
+    else
+        state.last_check_error = result.error or "GeoData check failed"
+    end
+end
+
+local function check(kind)
+    if not config(kind) then return { ok = false, kind = kind, error = "unsupported GeoData kind" } end
+    if not mkdirp(RUNTIME) then return { ok = false, kind = kind, error = "cannot create GeoData runtime directory" } end
+    local state = read_state(kind)
+    if operation_active(state) then
+        return { ok = false, kind = kind, error = "a GeoData update is already in progress" }
+    end
+    local result = probe(kind)
+    state.status = "idle"
+    state.progress = nil
+    state.error = nil
+    state.last_update = last_update_from_state(state)
+    apply_check(state, result)
+    save_state(kind, state)
+    result.checked = state.checked
+    result.check_ok = state.check_ok
+    result.last_check_error = state.last_check_error
+    result.last_update = state.last_update
+    return result
 end
 
 local EXIT_HINTS = {
@@ -227,6 +294,13 @@ local function worker(kind)
         started = tonumber(current.started) or os.time(),
         pid = nixio.getpid(),
         local_version = current.local_version or current.source_version,
+        source_version = current.source_version,
+        latest_version = current.latest_version,
+        update_available = current.update_available,
+        checked = current.checked,
+        check_ok = current.check_ok,
+        last_check_error = current.last_check_error,
+        last_update = last_update_from_state(current),
         progress = { downloaded = 0 }
     }
     save_state(kind, state)
@@ -261,7 +335,6 @@ local function worker(kind)
     if not ok then os.remove(temporary) end
 
     state.ok = ok == true
-    state.status = ok and "done" or "failed"
     state.finished = os.time()
     state.updated = ok == true
     state.progress = nil
@@ -270,7 +343,14 @@ local function worker(kind)
     if ok then
         state.source_version = source_version or state.source_version
         state.local_version = source_version or state.local_version
+        state.last_update = state.finished
+        state.status = "running"
+        save_state(kind, state)
+        local checked = probe(kind)
+        apply_check(state, checked)
+        if checked.ok ~= true then state.post_check_error = checked.error or "verification check failed" end
     end
+    state.status = ok and "done" or "failed"
     save_state(kind, state)
     remove_lock(kind)
     return state
@@ -283,7 +363,7 @@ local function start(kind)
     end
 
     local current = read_state(kind)
-    if (current.status == "starting" or current.status == "running") and process_alive(current.pid) then
+    if operation_active(current) then
         current.ok = true
         return current
     end
@@ -298,6 +378,13 @@ local function start(kind)
         status = "starting",
         started = os.time(),
         local_version = current.local_version or current.source_version,
+        source_version = current.source_version,
+        latest_version = current.latest_version,
+        update_available = current.update_available,
+        checked = current.checked,
+        check_ok = current.check_ok,
+        last_check_error = current.last_check_error,
+        last_update = last_update_from_state(current),
         progress = { downloaded = 0 },
         message = "GeoData download started"
     }
@@ -346,6 +433,40 @@ local function auto_update()
     }
 end
 
+local function status()
+    local assets = {}
+    for _, kind in ipairs({ "geoip", "geosite" }) do
+        local state = read_state(kind)
+        assets[kind] = {
+            kind = kind,
+            checked = tonumber(state.checked),
+            check_ok = state.check_ok,
+            latest_version = state.latest_version,
+            update_available = state.update_available,
+            last_check_error = state.last_check_error,
+            last_update = last_update_from_state(state),
+            post_check_error = state.post_check_error
+        }
+    end
+    return { ok = true, assets = assets }
+end
+
+local function next_weekly_run(now)
+    now = tonumber(now) or os.time()
+    local current = os.date("*t", now)
+    local days_until_sunday = (1 - current.wday) % 7
+    local candidate = os.time({
+        year = current.year,
+        month = current.month,
+        day = current.day + days_until_sunday,
+        hour = 4,
+        min = 17,
+        sec = 0
+    })
+    if candidate <= now then candidate = candidate + 7 * 24 * 60 * 60 end
+    return candidate
+end
+
 local command = arg[1] or ""
 local result
 if command == "start" then
@@ -354,6 +475,12 @@ elseif command == "worker" then
     result = worker(arg[2])
 elseif command == "auto-update" then
     result = auto_update()
+elseif command == "check" then
+    result = check(arg[2])
+elseif command == "status" then
+    result = status()
+elseif command == "next-run" then
+    result = { ok = true, next_update = next_weekly_run() }
 else
     result = { ok = false, error = "unknown GeoData updater command" }
 end

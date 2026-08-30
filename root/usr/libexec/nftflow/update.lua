@@ -262,19 +262,50 @@ local function probe_xray()
     }
 end
 
+local function last_update_from_state(state)
+    local value = tonumber(state and state.last_update)
+    if value then return value end
+    if state and state.updated == true then return tonumber(state.finished) end
+    return nil
+end
+
+local function apply_probe(state, result)
+    state.checked = os.time()
+    state.check_ok = result.ok == true
+    if result.ok == true then
+        state.installed_version = result.installed_version or state.installed_version
+        state.latest_version = result.latest_version
+        state.update_available = result.update_available
+        state.no_release = result.no_release == true
+        state.last_check_error = nil
+    else
+        state.installed_version = installed_version(PACKAGES[state.kind]) or state.installed_version
+        if state.latest_version then
+            state.update_available = is_update_available(state.installed_version, state.latest_version)
+        end
+        state.last_check_error = result.error or "update check failed"
+    end
+    return result
+end
+
 local function save_check(result)
-    if result.ok ~= true then return result end
+    local current = read_state(result.kind)
     local state = {
         ok = true,
         kind = result.kind,
         status = "idle",
-        checked = os.time(),
-        installed_version = result.installed_version,
-        latest_version = result.latest_version,
-        update_available = result.update_available,
-        no_release = result.no_release == true
+        installed_version = current.installed_version,
+        latest_version = current.latest_version,
+        update_available = current.update_available,
+        no_release = current.no_release == true,
+        last_update = last_update_from_state(current)
     }
+    apply_probe(state, result)
     save_state(result.kind, state)
+    result.checked = state.checked
+    result.check_ok = state.check_ok
+    result.last_check_error = state.last_check_error
+    result.last_update = state.last_update
     return result
 end
 
@@ -311,6 +342,7 @@ local function done_worker(kind, state, updated, message)
     state.error = nil
     state.installed_version = installed_version(PACKAGES[kind]) or state.installed_version
     if state.latest_version then state.update_available = is_update_available(state.installed_version, state.latest_version) end
+    if state.updated then state.last_update = state.finished end
     save_state(kind, state)
     remove_lock(kind)
     return state
@@ -325,14 +357,23 @@ local function set_phase(kind, state, phase, message)
     save_state(kind, state)
 end
 
+local function post_check(kind, state)
+    set_phase(kind, state, "checking", kind == "nftflow" and "Checking installed NftFlow version" or "Checking installed xray-core version")
+    local result = kind == "nftflow" and probe_nftflow() or probe_xray()
+    apply_probe(state, result)
+    if result.ok == true then
+        state.post_check_error = nil
+    else
+        state.post_check_error = result.error or "verification check failed"
+    end
+    return result
+end
+
 local function worker_nftflow(state)
     set_phase("nftflow", state, "checking", "Checking NftFlow release")
     local probe = probe_nftflow()
+    apply_probe(state, probe)
     if probe.ok ~= true then return fail_worker("nftflow", state, probe.error) end
-    state.installed_version = probe.installed_version
-    state.latest_version = probe.latest_version
-    state.update_available = probe.update_available
-    state.no_release = probe.no_release == true
     if probe.no_release then return done_worker("nftflow", state, false, "No published NftFlow release") end
     if probe.update_available ~= true then return done_worker("nftflow", state, false, "NftFlow is already up to date") end
 
@@ -358,16 +399,15 @@ local function worker_nftflow(state)
     local install_ok, install_output = exec_capture("apk add --allow-untrusted --upgrade " .. shellquote(package_path))
     os.remove(package_path)
     if not install_ok then return fail_worker("nftflow", state, "NftFlow installation failed: " .. compact_error(install_output)) end
+    post_check("nftflow", state)
     return done_worker("nftflow", state, true, "NftFlow updated successfully")
 end
 
 local function worker_xray(state)
     set_phase("xray", state, "checking", "Checking xray-core package")
     local probe = probe_xray()
+    apply_probe(state, probe)
     if probe.ok ~= true then return fail_worker("xray", state, probe.error) end
-    state.installed_version = probe.installed_version
-    state.latest_version = probe.latest_version
-    state.update_available = probe.update_available
     if probe.update_available ~= true then return done_worker("xray", state, false, "Xray Core is already up to date") end
 
     local was_running = exec_quiet("/etc/init.d/nftflow running")
@@ -376,6 +416,7 @@ local function worker_xray(state)
     local ok, output = exec_capture("apk -U upgrade " .. shellquote(PACKAGES.xray))
     if was_running then exec_quiet("/etc/init.d/nftflow start") end
     if not ok then return fail_worker("xray", state, "xray-core installation failed: " .. compact_error(output)) end
+    post_check("xray", state)
     return done_worker("xray", state, true, "Xray Core updated successfully")
 end
 
@@ -391,7 +432,12 @@ local function worker(kind)
         pid = nixio.getpid(),
         installed_version = current.installed_version,
         latest_version = current.latest_version,
-        update_available = current.update_available
+        update_available = current.update_available,
+        no_release = current.no_release == true,
+        checked = current.checked,
+        check_ok = current.check_ok,
+        last_check_error = current.last_check_error,
+        last_update = last_update_from_state(current)
     }
     save_state(kind, state)
     if kind == "nftflow" then return worker_nftflow(state) end
@@ -419,6 +465,11 @@ local function start(kind)
         installed_version = installed_version(PACKAGES[kind]),
         latest_version = current.latest_version,
         update_available = current.update_available,
+        no_release = current.no_release == true,
+        checked = current.checked,
+        check_ok = current.check_ok,
+        last_check_error = current.last_check_error,
+        last_update = last_update_from_state(current),
         message = "Update started"
     }
     local saved, save_error = save_state(kind, state)
@@ -460,6 +511,9 @@ local function component_status(kind)
         update_available = available,
         no_release = state.no_release == true,
         checked = state.checked,
+        check_ok = state.check_ok,
+        last_check_error = state.last_check_error,
+        last_update = last_update_from_state(state),
         operation = state
     }
 end
