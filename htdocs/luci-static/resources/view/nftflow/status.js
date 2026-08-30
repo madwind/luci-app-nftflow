@@ -110,15 +110,8 @@ function formatLogTimestamp(date, formatter) {
     return date.toISOString().slice(0, 19).replace('T', ' ');
 }
 
-function stripEmbeddedXrayTimestamp(message) {
-    return String(message || '').replace(
-        /^(nftflowctl(?:\[\d+\])?:\s*)\d{4}\/\d{2}\/\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+/i,
-        '$1'
-    );
-}
-
 function formatLogEntry(entry, formatter) {
-    var message = stripEmbeddedXrayTimestamp(entry && entry.msg != null ? String(entry.msg) : '');
+    var message = entry && entry.msg != null ? String(entry.msg) : '';
     var date = new Date(entry && entry.time);
     var timestamp = '';
 
