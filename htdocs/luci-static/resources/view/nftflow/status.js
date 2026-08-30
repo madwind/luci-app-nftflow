@@ -3,6 +3,7 @@
 'require rpc';
 'require poll';
 'require ui';
+'require uci';
 'require nftflow.ui as nftflowUi';
 
 var callStatus = rpc.declare({
@@ -20,18 +21,10 @@ var callAction = rpc.declare({
     reject: true
 });
 
-var callLogRead = rpc.declare({
-    object: 'log',
-    method: 'read',
-    params: [ 'lines', 'stream', 'oneshot' ],
-    expect: { log: [] },
-    reject: true
-});
-
 var LOG_TAG = 'nftflowctl';
 var LOG_LINES = 300;
 var LOG_MAX_BYTES = 96 * 1024;
-var LOG_POLL_INTERVAL = 1;
+var LOG_RECONNECT_MS = 2000;
 var ACTION_TIMEOUT = 45000;
 
 function numberOrNull(value) {
@@ -75,16 +68,35 @@ function actionText(action) {
     return _('Service action');
 }
 
-function validateLogResponse(entries) {
-    if (!Array.isArray(entries))
-        throw new Error(_('Runtime log returned an invalid line list.'));
+function logDateFormatter() {
+    var timezone = uci.get('system', '@system[0]', 'zonename');
+    timezone = timezone ? String(timezone).replace(/ /g, '_') : undefined;
 
-    return entries.filter(function(entry) {
-        var message = entry && entry.msg != null ? String(entry.msg) : '';
-        return message.toLowerCase().indexOf(LOG_TAG) !== -1;
-    }).map(function(entry) {
-        return String(entry.msg || '');
-    });
+    try {
+        return new Intl.DateTimeFormat(undefined, {
+            dateStyle: 'medium',
+            timeStyle: 'long',
+            timeZone: timezone
+        });
+    } catch (error) {
+        return null;
+    }
+}
+
+function formatLogEntry(entry, formatter) {
+    var message = entry && entry.msg != null ? String(entry.msg) : '';
+    var date = new Date(entry && entry.time);
+    var timestamp = '';
+
+    if (!isNaN(date.getTime())) {
+        try {
+            timestamp = formatter ? formatter.format(date) : date.toLocaleString();
+        } catch (error) {
+            timestamp = date.toLocaleString();
+        }
+    }
+
+    return timestamp ? '[' + timestamp + '] ' + message : message;
 }
 
 return view.extend({
@@ -95,13 +107,14 @@ return view.extend({
     load: function() {
         return Promise.all([
             L.resolveDefault(callStatus(), { ok: false, error: _('Unable to read service status.') }),
-            L.resolveDefault(callLogRead(LOG_LINES, false, true), [])
+            uci.load('system').catch(function() { return {}; })
         ]);
     },
 
     render: function(data) {
         document.title = _('NftFlow | Overview');
 
+        var formatter = logDateFormatter();
         var service = E('span', { 'aria-live': 'polite' });
         var uptime = E('span');
         var firewall = E('span', { 'aria-live': 'polite' });
@@ -129,7 +142,6 @@ return view.extend({
         });
         var serviceButtons = [];
         var statusRequest = null;
-        var logRequest = null;
         var actionInProgress = false;
         var actionDeadline = 0;
         var lastStatus = null;
@@ -137,6 +149,8 @@ return view.extend({
         var pageVisible = true;
         var followLogs = true;
         var logLines = [];
+        var streamController = null;
+        var reconnectTimer = null;
 
         function setMessage(state, value) {
             nftflowUi.setState(message, state, value);
@@ -241,31 +255,131 @@ return view.extend({
                 logOutput.scrollTop = oldScrollTop;
         }
 
-        function applyLogResponse(entries) {
-            logLines = nftflowUi.boundedLines(validateLogResponse(entries), LOG_LINES, LOG_MAX_BYTES);
+        function appendLogEntry(entry) {
+            var logMessage = entry && entry.msg != null ? String(entry.msg) : '';
+
+            if (logMessage.toLowerCase().indexOf(LOG_TAG) === -1)
+                return;
+
+            logLines.push(formatLogEntry(entry, formatter));
+            logLines = nftflowUi.boundedLines(logLines, LOG_LINES, LOG_MAX_BYTES);
             renderLogs();
-            nftflowUi.setState(logState, paused ? 'notice' : 'ok', paused ? _('Paused') : _('Live'));
-            return entries;
         }
 
-        function requestLogs() {
-            if (paused || !pageVisible || logRequest)
-                return logRequest || Promise.resolve();
+        function consumeSseFrame(frame) {
+            var eventName = 'message';
+            var eventData = [];
 
-            logRequest = callLogRead(LOG_LINES, false, true).then(function(entries) {
-                return applyLogResponse(entries);
-            }).catch(function(error) {
-                if (pageVisible) {
-                    nftflowUi.setState(logState, 'warn', _('Unavailable'));
-                    console.warn(error);
-                }
-                return null;
-            }).then(function(result) {
-                logRequest = null;
-                return result;
+            frame.split('\n').forEach(function(line) {
+                if (!line || line.charAt(0) === ':')
+                    return;
+                if (line.indexOf('event:') === 0)
+                    eventName = line.slice(6).trim();
+                else if (line.indexOf('data:') === 0)
+                    eventData.push(line.slice(5).trimStart());
             });
 
-            return logRequest;
+            if (eventName !== 'message' || !eventData.length)
+                return;
+
+            try {
+                appendLogEntry(JSON.parse(eventData.join('\n')));
+            } catch (error) {
+                console.warn(error);
+            }
+        }
+
+        function pumpLogStream(reader, decoder, controller, state) {
+            return reader.read().then(function(chunk) {
+                if (chunk.done)
+                    throw new Error('log subscription ended');
+
+                state.buffer += decoder.decode(chunk.value, { stream: true }).replace(/\r\n/g, '\n');
+
+                var boundary;
+                while ((boundary = state.buffer.indexOf('\n\n')) >= 0) {
+                    consumeSseFrame(state.buffer.slice(0, boundary));
+                    state.buffer = state.buffer.slice(boundary + 2);
+                }
+
+                if (!controller.signal.aborted)
+                    return pumpLogStream(reader, decoder, controller, state);
+            });
+        }
+
+        function clearReconnect() {
+            if (reconnectTimer !== null) {
+                window.clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+        }
+
+        function stopLogStream() {
+            clearReconnect();
+
+            if (streamController)
+                streamController.abort();
+
+            streamController = null;
+        }
+
+        function scheduleReconnect() {
+            if (paused || !pageVisible || reconnectTimer !== null)
+                return;
+
+            nftflowUi.setState(logState, 'notice', _('Reconnecting'));
+            reconnectTimer = window.setTimeout(function() {
+                reconnectTimer = null;
+                startLogStream();
+            }, LOG_RECONNECT_MS);
+        }
+
+        function startLogStream() {
+            if (paused || !pageVisible || streamController)
+                return Promise.resolve();
+
+            if (typeof fetch !== 'function' || typeof TextDecoder !== 'function' || typeof AbortController !== 'function') {
+                nftflowUi.setState(logState, 'warn', _('Unavailable'));
+                return Promise.resolve();
+            }
+
+            clearReconnect();
+            nftflowUi.setState(logState, 'notice', _('Connecting'));
+
+            var controller = new AbortController();
+            streamController = controller;
+
+            return fetch('/ubus/subscribe/log', {
+                method: 'GET',
+                headers: {
+                    'Accept': 'text/event-stream',
+                    'Authorization': 'Bearer ' + rpc.getSessionID()
+                },
+                credentials: 'same-origin',
+                cache: 'no-store',
+                signal: controller.signal
+            }).then(function(response) {
+                if (!response.ok || !response.body)
+                    throw new Error('log subscription HTTP ' + response.status);
+
+                nftflowUi.setState(logState, 'ok', _('Live'));
+
+                return pumpLogStream(
+                    response.body.getReader(),
+                    new TextDecoder(),
+                    controller,
+                    { buffer: '' }
+                );
+            }).catch(function(error) {
+                if (!controller.signal.aborted)
+                    console.warn(error);
+            }).then(function() {
+                if (streamController === controller)
+                    streamController = null;
+
+                if (!controller.signal.aborted)
+                    scheduleReconnect();
+            });
         }
 
         function waitForLifecycle(action) {
@@ -312,7 +426,6 @@ return view.extend({
             }).then(function(result) {
                 actionInProgress = false;
                 updateActionButtons();
-                requestLogs();
                 return result;
             });
         }
@@ -342,32 +455,31 @@ return view.extend({
         pauseButton.addEventListener('click', ui.createHandlerFn(pauseButton, function() {
             paused = !paused;
             pauseButton.textContent = paused ? _('Resume') : _('Pause');
-            nftflowUi.setState(logState, paused ? 'notice' : 'ok', paused ? _('Paused') : _('Live'));
-            return paused ? Promise.resolve() : requestLogs();
+
+            if (paused) {
+                stopLogStream();
+                nftflowUi.setState(logState, 'notice', _('Paused'));
+                return Promise.resolve();
+            }
+
+            return startLogStream();
         }));
 
         var initialStatus = data && data[0];
-        var initialLogs = data && data[1];
 
         if (initialStatus && initialStatus.ok === true)
             updateStatus(initialStatus);
         else
             showStatusUnavailable(initialStatus && initialStatus.error);
 
-        try {
-            applyLogResponse(initialLogs);
-        } catch (error) {
-            nftflowUi.setState(logState, 'warn', _('Unavailable'));
-            console.warn(error);
-        }
-
         poll.add(refreshStatus, L.env.pollinterval);
-        poll.add(requestLogs, LOG_POLL_INTERVAL);
         window.addEventListener('pagehide', function() {
             pageVisible = false;
+            stopLogStream();
             poll.remove(refreshStatus);
-            poll.remove(requestLogs);
         }, { once: true });
+
+        startLogStream();
 
         var root = E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Overview')),
