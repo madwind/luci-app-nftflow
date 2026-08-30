@@ -1,6 +1,6 @@
 {
     "luci-app-nftflow": {
-        "description": "Manage NftFlow runtime, configuration, firewall, routing and GeoData",
+        "description": "Manage NftFlow runtime, configuration, firewall, routing and updates",
         "read": {
             "uci": [
                 "nftflow"
@@ -20,7 +20,9 @@
                     "config_read",
                     "config_validate",
                     "geo_status",
-                    "geo_check"
+                    "geo_check",
+                    "update_status",
+                    "update_check"
                 ]
             }
         },
@@ -38,6 +40,7 @@
                     "routing_save",
                     "routing_apply",
                     "geo_update",
+                    "update_install",
                     "action",
                     "service_sync"
                 ]
