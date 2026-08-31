@@ -6,6 +6,8 @@
 local jsonc = require "luci.jsonc"
 
 local M = {}
+local MISSING_GEOSITE = "full:nftflow-missing.invalid"
+local MISSING_GEOIP = "0.0.0.0/32"
 
 local function json_encode(value)
     if jsonc.stringify then return jsonc.stringify(value) end
@@ -145,10 +147,7 @@ local function replacement_for(value, geoip_codes, geosite_codes)
             if string.upper(lookup) == "PRIVATE" then
                 return nil, "required geoip:private is missing from the installed GeoIP database"
             end
-            if not geoip_codes.PRIVATE then
-                return nil, "cannot replace " .. value .. " because geoip:private is unavailable"
-            end
-            return "geoip:private"
+            return MISSING_GEOIP
         end
         return value
     end
@@ -158,7 +157,7 @@ local function replacement_for(value, geoip_codes, geosite_codes)
         geosite = strip_leading_bang(geosite)
         local code = geosite:match("^([^@]+)") or geosite
         if code ~= "" and not geosite_codes[string.upper(code)] then
-            return "domain:" .. code
+            return MISSING_GEOSITE
         end
     end
 
