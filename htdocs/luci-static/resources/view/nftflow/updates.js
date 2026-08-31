@@ -154,8 +154,7 @@ return view.extend({
         var geoResult = data && data[1];
         var automatic = E('span', { 'aria-live': 'polite' }, _('Loading automatic update status...'));
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
-        var softwareComponents = E('div');
-        var geoComponents = E('div');
+        var componentGrid = E('div', { 'class': 'nftflow-update-grid' });
         var rows = {};
         var monitorTasks = {};
         var monitorStops = {};
@@ -172,11 +171,11 @@ return view.extend({
         function setAutomatic(result) {
             var state = result && result.auto_update || {};
             if (state.scheduled !== true) {
-                nftflowUi.setState(automatic, 'notice', _('GeoData automatic update: Not scheduled'));
+                nftflowUi.setState(automatic, 'notice', _('Automatic update (GeoData): Not scheduled'));
                 return;
             }
             var next = state.next_update ? formatTimestamp(state.next_update) : '—';
-            nftflowUi.setState(automatic, 'ok', _('GeoData automatic update: Weekly · Next: %s').format(next));
+            nftflowUi.setState(automatic, 'ok', _('Automatic update (GeoData): Weekly · Next: %s').format(next));
         }
 
         function renderVersion(row) {
@@ -354,18 +353,13 @@ return view.extend({
                 return stopUpdate(row);
             }));
 
-            var component = E('div', { 'class': 'cbi-section-node' }, [
+            componentGrid.appendChild(E('div', { 'class': 'cbi-section-node' }, [
                 E('h4', {}, componentLabel(kind)),
                 valueRow(_('Version'), version),
                 valueRow(_('Status'), status),
                 valueRow(_('Actions'), actions),
                 history
-            ]);
-
-            if (SOFTWARE_KINDS.indexOf(kind) >= 0)
-                softwareComponents.appendChild(component);
-            else
-                geoComponents.appendChild(component);
+            ]));
         }
 
         function applySoftwareSnapshot(result) {
@@ -608,22 +602,46 @@ return view.extend({
             Object.keys(monitorStops).forEach(function(kind) { monitorStops[kind](); });
         }, { once: true });
 
-        return E('div', { 'class': 'cbi-map' }, [
+        var layoutStyle = E('style', { 'type': 'text/css' }, [
+            '#nftflow-updates .nftflow-update-toolbar {' +
+                'display:flex;' +
+                'align-items:center;' +
+                'justify-content:space-between;' +
+                'gap:1em;' +
+            '}' +
+            '#nftflow-updates .nftflow-update-toolbar .cbi-section-descr {' +
+                'margin-bottom:0;' +
+            '}' +
+            '#nftflow-updates .nftflow-update-grid {' +
+                'display:grid;' +
+                'grid-template-columns:repeat(2,minmax(0,1fr));' +
+                'gap:1em;' +
+            '}' +
+            '#nftflow-updates .nftflow-update-grid > .cbi-section-node {' +
+                'min-width:0;' +
+            '}' +
+            '@media (max-width:800px) {' +
+                '#nftflow-updates .nftflow-update-toolbar {' +
+                    'flex-wrap:wrap;' +
+                '}' +
+                '#nftflow-updates .nftflow-update-grid {' +
+                    'grid-template-columns:1fr;' +
+                '}' +
+            '}'
+        ]);
+
+        return E('div', { 'class': 'cbi-map', 'id': 'nftflow-updates' }, [
+            layoutStyle,
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Updates')),
             E('div', { 'class': 'cbi-map-descr' }, _('Check and install NftFlow, Xray Core and GeoData updates. Update sources and local paths are configured in Settings.')),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Components')),
-                E('div', { 'class': 'cbi-section-descr' }, automatic),
+                E('div', { 'class': 'nftflow-update-toolbar' }, [
+                    E('div', { 'class': 'cbi-section-descr' }, automatic),
+                    checkAll
+                ]),
                 message,
-                E('div', { 'class': 'cbi-page-actions' }, [ checkAll ])
-            ]),
-            E('div', { 'class': 'cbi-section' }, [
-                E('h3', { 'class': 'cbi-section-title' }, _('Software')),
-                softwareComponents
-            ]),
-            E('div', { 'class': 'cbi-section' }, [
-                E('h3', { 'class': 'cbi-section-title' }, _('GeoData')),
-                geoComponents
+                componentGrid
             ])
         ]);
     }
