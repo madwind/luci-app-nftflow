@@ -135,17 +135,6 @@ function formatTimestamp(value) {
     }
 }
 
-function metaTag(label) {
-    var value = E('span', {}, '—');
-    var node = E('span', {
-        'style': 'display:inline-flex;align-items:center;gap:.35rem;padding:.15rem .45rem;border:1px solid rgba(127,127,127,.35);border-radius:.35rem;white-space:nowrap;'
-    }, [
-        E('span', { 'style': 'opacity:.7;' }, label),
-        value
-    ]);
-    return { node: node, value: value };
-}
-
 return view.extend({
     handleSave: null,
     handleSaveApply: null,
@@ -165,7 +154,7 @@ return view.extend({
         var geoResult = data && data[1];
         var automatic = E('span', { 'aria-live': 'polite' }, _('Loading automatic update status...'));
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
-        var tableBody = E('tbody');
+        var componentSections = E('div');
         var rows = {};
         var monitorTasks = {};
         var monitorStops = {};
@@ -292,15 +281,19 @@ return view.extend({
             }
         }
 
+        function valueRow(label, field) {
+            return E('div', { 'class': 'cbi-value' }, [
+                E('div', { 'class': 'cbi-value-title' }, label),
+                E('div', { 'class': 'cbi-value-field' }, [ field ])
+            ]);
+        }
+
         function createRow(kind) {
             var status = E('span', { 'aria-live': 'polite' }, _('Loading'));
-            var lastCheckTag = metaTag(_('Last check'));
-            var lastUpdateTag = metaTag(_('Last update'));
-            var meta = E('div', {
-                'style': 'margin-top:.35rem;display:flex;flex-wrap:wrap;justify-content:center;gap:.35rem;font-size:.82em;'
-            }, [ lastCheckTag.node, lastUpdateTag.node ]);
-            var installed = E('span', { 'style': 'font-family:monospace;' });
-            var latest = E('span', { 'style': 'font-family:monospace;' });
+            var lastCheck = E('span', {}, '—');
+            var lastUpdate = E('span', {}, '—');
+            var installed = E('code', {}, '—');
+            var latest = E('code', {}, '—');
             var check = E('button', {
                 'class': 'btn cbi-button cbi-button-action',
                 'type': 'button'
@@ -314,11 +307,12 @@ return view.extend({
                 'type': 'button',
                 'disabled': ''
             }, _('Stop'));
+            var actions = E('span', {}, [ check, ' ', update, ' ', stop ]);
             var row = {
                 kind: kind,
                 status: status,
-                lastCheck: lastCheckTag.value,
-                lastUpdate: lastUpdateTag.value,
+                lastCheck: lastCheck,
+                lastUpdate: lastUpdate,
                 installed: installed,
                 latest: latest,
                 check: check,
@@ -343,13 +337,15 @@ return view.extend({
                 return stopUpdate(row);
             }));
 
-            tableBody.appendChild(E('tr', { 'class': 'tr' }, [
-                E('th', { 'class': 'th cbi-section-table-cell', 'data-title': _('Component'), 'style': 'width:16%;' }, componentLabel(kind)),
-                E('td', { 'class': 'td cbi-section-table-cell', 'data-title': _('Installed'), 'style': 'width:17%;text-align:center;' }, installed),
-                E('td', { 'class': 'td cbi-section-table-cell', 'data-title': _('Latest'), 'style': 'width:17%;text-align:center;' }, latest),
-                E('td', { 'class': 'td cbi-section-table-cell', 'data-title': _('Status'), 'style': 'width:30%;text-align:center;' }, [ status, meta ]),
-                E('td', { 'class': 'td cbi-section-table-cell', 'data-title': _('Actions'), 'style': 'width:20%;text-align:right;white-space:nowrap;' }, [
-                    E('div', { 'style': 'display:inline-flex;flex-wrap:wrap;justify-content:flex-end;gap:.5rem;' }, [ check, update, stop ])
+            componentSections.appendChild(E('div', { 'class': 'cbi-section' }, [
+                E('h3', { 'class': 'cbi-section-title' }, componentLabel(kind)),
+                E('div', { 'class': 'cbi-section-node' }, [
+                    valueRow(_('Installed'), installed),
+                    valueRow(_('Latest'), latest),
+                    valueRow(_('Status'), status),
+                    valueRow(_('Last check'), lastCheck),
+                    valueRow(_('Last update'), lastUpdate),
+                    valueRow(_('Actions'), actions)
                 ])
             ]));
         }
@@ -598,23 +594,12 @@ return view.extend({
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Updates')),
             E('div', { 'class': 'cbi-map-descr' }, _('Check and install NftFlow, Xray Core and GeoData updates. Update sources and local paths are configured in Settings.')),
             E('div', { 'class': 'cbi-section' }, [
-                E('div', { 'style': 'display:flex;align-items:center;justify-content:space-between;gap:1rem;' }, [
-                    E('h3', { 'class': 'cbi-section-title', 'style': 'margin-bottom:0;' }, _('Components')),
-                    checkAll
-                ]),
-                E('div', { 'class': 'cbi-section-descr', 'style': 'margin-top:.75rem;' }, automatic),
+                E('h3', { 'class': 'cbi-section-title' }, _('Components')),
+                E('div', { 'class': 'cbi-section-descr' }, automatic),
                 message,
-                E('table', { 'class': 'table cbi-section-table' }, [
-                    E('thead', {}, [ E('tr', { 'class': 'tr' }, [
-                        E('th', { 'class': 'th', 'style': 'width:16%;' }, _('Component')),
-                        E('th', { 'class': 'th', 'style': 'width:17%;text-align:center;' }, _('Installed')),
-                        E('th', { 'class': 'th', 'style': 'width:17%;text-align:center;' }, _('Latest')),
-                        E('th', { 'class': 'th', 'style': 'width:30%;text-align:center;' }, _('Status')),
-                        E('th', { 'class': 'th', 'style': 'width:20%;text-align:right;' }, _('Actions'))
-                    ]) ]),
-                    tableBody
-                ])
-            ])
+                E('div', { 'class': 'cbi-page-actions' }, [ checkAll ])
+            ]),
+            componentSections
         ]);
     }
 });
