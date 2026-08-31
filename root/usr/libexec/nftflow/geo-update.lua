@@ -113,6 +113,12 @@ local function config(kind)
     return nil
 end
 
+local function asset_ready(kind)
+    local asset = config(kind)
+    local stat = asset and nixio_fs and nixio_fs.stat and nixio_fs.stat(asset.path) or nil
+    return type(stat) == "table" and (tonumber(stat.size) or 0) >= 1024
+end
+
 local function dirname(path)
     return tostring(path):match("^(.*)/[^/]*$") or "."
 end
@@ -135,10 +141,15 @@ local function read_state(kind)
     local value = raw and trim(raw) ~= "" and decode(raw) or nil
     if type(value) ~= "table" then value = { kind = kind, status = "idle" } end
     value.kind = kind
-    local installed = geodata_version.read(kind)
-    if installed then
-        value.local_version = value.local_version or installed
-        value.source_version = value.source_version or installed
+    if asset_ready(kind) then
+        local installed = geodata_version.read(kind)
+        if installed then
+            value.local_version = value.local_version or installed
+            value.source_version = value.source_version or installed
+        end
+    else
+        value.local_version = nil
+        value.source_version = nil
     end
     return value
 end
@@ -205,9 +216,14 @@ local function check(kind)
     end
     local result = probe(kind)
     if result.ok == true then
-        result.local_version = result.local_version or state.local_version or state.source_version
-        if result.remote_version and result.local_version then
-            result.update_available = result.remote_version ~= result.local_version
+        if asset_ready(kind) then
+            result.local_version = result.local_version or state.local_version or state.source_version
+            if result.remote_version and result.local_version then
+                result.update_available = result.remote_version ~= result.local_version
+            end
+        else
+            result.local_version = nil
+            result.update_available = nil
         end
     end
     state.status = "idle"

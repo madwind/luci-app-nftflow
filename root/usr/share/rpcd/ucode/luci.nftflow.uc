@@ -66,7 +66,8 @@ function run_stop_update(kind) {
 
 function merge_geo_cache(asset, cached) {
     if (!asset || !cached) return;
-    asset.local_version = cached.local_version || asset.local_version;
+    asset.ready = asset.exists === true && (asset.size || 0) >= 1024;
+    asset.local_version = asset.ready ? (cached.local_version || asset.local_version) : null;
     asset.checked = cached.checked;
     asset.check_ok = cached.check_ok;
     asset.latest_version = cached.latest_version;
