@@ -118,6 +118,33 @@ local function omit_empty_macro(segment, raw, next_position)
     return segment, next_position
 end
 
+local function queue_geoip_elements(deferred, order, set_spec, values)
+    local bucket = deferred[set_spec.key]
+    if not bucket then
+        bucket = { spec = set_spec, values = {}, seen = {} }
+        deferred[set_spec.key] = bucket
+        order[#order + 1] = bucket
+    end
+    for _, value in ipairs(values) do
+        if not bucket.seen[value] then
+            bucket.seen[value] = true
+            bucket.values[#bucket.values + 1] = value
+        end
+    end
+end
+
+local function append_geoip_elements(output, order)
+    for _, bucket in ipairs(order) do
+        if #bucket.values > 0 then
+            output[#output + 1] = string.format(
+                "\nadd element %s %s %s { %s }\n",
+                bucket.spec.table_family, bucket.spec.table_name, bucket.spec.name,
+                table.concat(bucket.values, ", ")
+            )
+        end
+    end
+end
+
 local function compile(raw)
     local parsed, parse_error = nft_source.inspect(raw, OWNED_TABLE)
     if not parsed then return nil, nil, parse_error end
@@ -126,6 +153,7 @@ local function compile(raw)
     if #parsed.macros == 0 then return raw, parsed, nil, warnings end
 
     local cache, output, position = {}, {}, 1
+    local deferred, deferred_order = {}, {}
     local path = geoip_path()
     for _, macro in ipairs(parsed.macros) do
         local segment = raw:sub(position, macro.start_position - 1)
@@ -153,15 +181,16 @@ local function compile(raw)
                 add_warning(warnings, warning_seen,
                     "geoip:" .. macro.tag .. " has no IPv" .. tostring(macro.family) .. " CIDRs; macro ignored")
             end
-            segment, next_position = omit_empty_macro(segment, raw, next_position)
-            output[#output + 1] = segment
         else
-            output[#output + 1] = segment
-            output[#output + 1] = table.concat(values, ", ")
+            queue_geoip_elements(deferred, deferred_order, macro.set, values)
         end
+
+        segment, next_position = omit_empty_macro(segment, raw, next_position)
+        output[#output + 1] = segment
         position = next_position
     end
     output[#output + 1] = raw:sub(position)
+    append_geoip_elements(output, deferred_order)
     return table.concat(output), parsed, nil, warnings
 end
 
