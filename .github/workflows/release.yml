@@ -124,6 +124,38 @@ jobs:
           test -x "$SDK_CACHE_ROOT/$SDK_DIRECTORY/staging_dir/host/bin/apk"
           test -x "$SDK_CACHE_ROOT/$SDK_DIRECTORY/staging_dir/host/bin/fakeroot"
 
+      - name: Prepare OpenWrt SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          OPENWRT_SDK: ${{ env.SDK_CACHE_ROOT }}/${{ env.SDK_DIRECTORY }}
+        run: |
+          set -euo pipefail
+
+          sdk="$OPENWRT_SDK"
+          sdk_prepared="$sdk/.nftflow-sdk-prepared-v$SDK_PREP_REV"
+          test -x "$sdk/scripts/feeds"
+
+          printf 'SDK preparation: updating feeds\n'
+          "$sdk/scripts/feeds" update base packages luci
+          printf 'SDK preparation: installing feeds\n'
+          "$sdk/scripts/feeds" install -a >/dev/null
+          test -f "$sdk/feeds/luci/luci.mk"
+
+          if [[ ! -f "$sdk/.config" ]]; then
+            printf 'SDK preparation: running defconfig\n'
+            make -C "$sdk" defconfig
+          fi
+
+          touch "$sdk_prepared"
+
+      - name: Save prepared OpenWrt SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.SDK_CACHE_ROOT }}
+          key: ${{ runner.os }}-openwrt-sdk-${{ env.OPENWRT_VERSION }}-${{ env.OPENWRT_TARGET }}-${{ env.OPENWRT_SUBTARGET }}-${{ env.SDK_ARCHIVE }}-${{ env.SDK_SHA256 }}-prepared-v${{ env.SDK_PREP_REV }}
+
       - name: Build release APK
         shell: bash
         env:
