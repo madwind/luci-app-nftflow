@@ -154,7 +154,8 @@ return view.extend({
         var geoResult = data && data[1];
         var automatic = E('span', { 'aria-live': 'polite' }, _('Loading automatic update status...'));
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
-        var componentSections = E('div');
+        var softwareComponents = E('div');
+        var geoComponents = E('div');
         var rows = {};
         var monitorTasks = {};
         var monitorStops = {};
@@ -178,18 +179,37 @@ return view.extend({
             nftflowUi.setState(automatic, 'ok', _('GeoData automatic update: Weekly · Next: %s').format(next));
         }
 
+        function renderVersion(row) {
+            var installed = row.installedVersion || '';
+            var latest = row.latestVersion || '';
+            while (row.version.firstChild)
+                row.version.removeChild(row.version.firstChild);
+
+            row.version.appendChild(E('code', {}, installed || _('Unknown')));
+            if (latest && latest !== installed) {
+                row.version.appendChild(document.createTextNode(' → '));
+                row.version.appendChild(E('code', {}, latest));
+            }
+        }
+
         function setVersions(row, installed, latest) {
             if (installed) row.installedVersion = installed;
             if (latest) row.latestVersion = latest;
-            nftflowUi.setText(row.installed, row.installedVersion || _('Unknown'));
-            nftflowUi.setText(row.latest, row.latestVersion || '—');
+            renderVersion(row);
         }
 
         function setRowMeta(row, checked, lastUpdate) {
             if (checked != null) row.checkedAt = Number(checked) || 0;
             if (lastUpdate != null) row.lastUpdateAt = Number(lastUpdate) || 0;
-            nftflowUi.setText(row.lastCheck, formatTimestamp(row.checkedAt));
-            nftflowUi.setText(row.lastUpdate, formatTimestamp(row.lastUpdateAt));
+
+            var history = [];
+            if (row.checkedAt)
+                history.push(_('Last check: %s').format(formatTimestamp(row.checkedAt)));
+            if (row.lastUpdateAt)
+                history.push(_('Last update: %s').format(formatTimestamp(row.lastUpdateAt)));
+
+            nftflowUi.setText(row.history, history.join(' · '));
+            row.history.hidden = history.length === 0;
         }
 
         function setIdleStatus(row, available, fallback) {
@@ -290,10 +310,9 @@ return view.extend({
 
         function createRow(kind) {
             var status = E('span', { 'aria-live': 'polite' }, _('Loading'));
-            var lastCheck = E('span', {}, '—');
-            var lastUpdate = E('span', {}, '—');
-            var installed = E('code', {}, '—');
-            var latest = E('code', {}, '—');
+            var version = E('span');
+            var history = E('div', { 'class': 'cbi-section-descr' });
+            history.hidden = true;
             var check = E('button', {
                 'class': 'btn cbi-button cbi-button-action',
                 'type': 'button'
@@ -311,10 +330,8 @@ return view.extend({
             var row = {
                 kind: kind,
                 status: status,
-                lastCheck: lastCheck,
-                lastUpdate: lastUpdate,
-                installed: installed,
-                latest: latest,
+                version: version,
+                history: history,
                 check: check,
                 update: update,
                 stop: stop,
@@ -337,17 +354,18 @@ return view.extend({
                 return stopUpdate(row);
             }));
 
-            componentSections.appendChild(E('div', { 'class': 'cbi-section' }, [
-                E('h3', { 'class': 'cbi-section-title' }, componentLabel(kind)),
-                E('div', { 'class': 'cbi-section-node' }, [
-                    valueRow(_('Installed'), installed),
-                    valueRow(_('Latest'), latest),
-                    valueRow(_('Status'), status),
-                    valueRow(_('Last check'), lastCheck),
-                    valueRow(_('Last update'), lastUpdate),
-                    valueRow(_('Actions'), actions)
-                ])
-            ]));
+            var component = E('div', { 'class': 'cbi-section-node' }, [
+                E('h4', {}, componentLabel(kind)),
+                valueRow(_('Version'), version),
+                valueRow(_('Status'), status),
+                valueRow(_('Actions'), actions),
+                history
+            ]);
+
+            if (SOFTWARE_KINDS.indexOf(kind) >= 0)
+                softwareComponents.appendChild(component);
+            else
+                geoComponents.appendChild(component);
         }
 
         function applySoftwareSnapshot(result) {
@@ -599,7 +617,14 @@ return view.extend({
                 message,
                 E('div', { 'class': 'cbi-page-actions' }, [ checkAll ])
             ]),
-            componentSections
+            E('div', { 'class': 'cbi-section' }, [
+                E('h3', { 'class': 'cbi-section-title' }, _('Software')),
+                softwareComponents
+            ]),
+            E('div', { 'class': 'cbi-section' }, [
+                E('h3', { 'class': 'cbi-section-title' }, _('GeoData')),
+                geoComponents
+            ])
         ]);
     }
 });
