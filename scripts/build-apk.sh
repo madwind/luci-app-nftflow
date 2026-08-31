@@ -71,7 +71,7 @@ trap cleanup EXIT
 # the same path used by an image build and by the release workflow.
 mkdir -p "$PACKAGE_DIR"
 cp "$PROJECT/Makefile" "$PROJECT/version.env" "$PACKAGE_DIR/"
-cp -a "$PROJECT/root" "$PROJECT/htdocs" "$PROJECT/tools" "$PACKAGE_DIR/"
+cp -a "$PROJECT/root" "$PROJECT/htdocs" "$PACKAGE_DIR/"
 
 SECONDS=0
 make -C "$SDK" package/$PACKAGE_NAME/clean
