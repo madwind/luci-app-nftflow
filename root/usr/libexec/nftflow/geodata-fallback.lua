@@ -21,6 +21,28 @@ local function trim(value)
     return (tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
+local function shellquote(value)
+    return "'" .. tostring(value or ""):gsub("'", "'\\''") .. "'"
+end
+
+local function read_file(path)
+    local file = io.open(path, "rb")
+    if not file then return nil end
+    local value = file:read("*a")
+    file:close()
+    return value
+end
+
+local function write_file(path, value)
+    local file, err = io.open(path, "w")
+    if not file then return nil, err end
+    local written, write_error = file:write(value)
+    if not written then file:close(); return nil, write_error end
+    local closed, close_error = file:close()
+    if not closed then return nil, close_error end
+    return true
+end
+
 local function read_varint_file(file)
     local value, multiplier = 0, 1
     for _ = 1, 10 do
@@ -185,6 +207,31 @@ function M.prepare(raw, asset_dir)
 
     if #replacements == 0 then return raw, replacements end
     return json_encode(prepared) .. "\n", replacements
+end
+
+if tostring(arg and arg[0] or ""):match("geodata%-fallback%.lua$") and arg[1] == "prepare" then
+    local source_path, asset_dir, output_path = arg[2], arg[3], arg[4]
+    local raw = source_path and read_file(source_path)
+    if not raw then
+        io.stderr:write("cannot read Xray configuration: " .. tostring(source_path or "") .. "\n")
+        os.exit(1)
+    end
+    local prepared, replacements, prepare_error = M.prepare(raw, asset_dir)
+    if not prepared then
+        io.stderr:write(tostring(prepare_error or "cannot prepare Xray runtime configuration") .. "\n")
+        os.exit(1)
+    end
+    local saved, save_error = write_file(output_path, prepared)
+    if not saved then
+        io.stderr:write(tostring(save_error or ("cannot write " .. tostring(output_path))) .. "\n")
+        os.exit(1)
+    end
+    for _, replacement in ipairs(replacements or {}) do
+        os.execute("logger -t nftflowctl " .. shellquote(
+            "GeoData fallback: " .. replacement.from .. " -> " .. replacement.to))
+    end
+    io.write(json_encode({ ok = true, path = output_path, replacements = replacements or {} }) .. "\n")
+    os.exit(0)
 end
 
 return M
