@@ -5,6 +5,7 @@
 local jsonc = require "luci.jsonc"
 local nixio = require "nixio"
 local nixio_fs = require "nixio.fs"
+local geodata_version = dofile "/usr/libexec/nftflow/geodata-version.lua"
 
 local RUNTIME = "/var/run/nftflow"
 local LOG_DIR = "/var/log/nftflow"
@@ -131,13 +132,15 @@ end
 
 local function read_state(kind)
     local raw = read_file(state_path(kind))
-    if not raw or trim(raw) == "" then return { kind = kind, status = "idle" } end
-    local value = decode(raw)
-    if type(value) == "table" then
-        value.kind = kind
-        return value
+    local value = raw and trim(raw) ~= "" and decode(raw) or nil
+    if type(value) ~= "table" then value = { kind = kind, status = "idle" } end
+    value.kind = kind
+    local installed = geodata_version.read(kind)
+    if installed then
+        value.local_version = value.local_version or installed
+        value.source_version = value.source_version or installed
     end
-    return { kind = kind, status = "idle" }
+    return value
 end
 
 local function remove_lock(kind)
@@ -201,6 +204,12 @@ local function check(kind)
         return { ok = false, kind = kind, error = "a GeoData update is already in progress" }
     end
     local result = probe(kind)
+    if result.ok == true then
+        result.local_version = result.local_version or state.local_version or state.source_version
+        if result.remote_version and result.local_version then
+            result.update_available = result.remote_version ~= result.local_version
+        end
+    end
     state.status = "idle"
     state.progress = nil
     state.error = nil
@@ -343,10 +352,20 @@ local function worker(kind)
     if ok then
         state.source_version = source_version or state.source_version
         state.local_version = source_version or state.local_version
+        if state.local_version then
+            local persisted, persist_error = geodata_version.write(kind, state.local_version)
+            if not persisted then state.persist_error = persist_error or "cannot persist installed GeoData version" end
+        end
         state.last_update = state.finished
         state.status = "running"
         save_state(kind, state)
         local checked = probe(kind)
+        if checked.ok == true then
+            checked.local_version = checked.local_version or state.local_version
+            if checked.remote_version and checked.local_version then
+                checked.update_available = checked.remote_version ~= checked.local_version
+            end
+        end
         apply_check(state, checked)
         if checked.ok ~= true then state.post_check_error = checked.error or "verification check failed" end
     end
@@ -439,6 +458,7 @@ local function status()
         local state = read_state(kind)
         assets[kind] = {
             kind = kind,
+            local_version = state.local_version or state.source_version,
             checked = tonumber(state.checked),
             check_ok = state.check_ok,
             latest_version = state.latest_version,
