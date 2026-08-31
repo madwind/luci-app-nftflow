@@ -118,6 +118,29 @@ local function omit_empty_macro(segment, raw, next_position)
     return segment, next_position
 end
 
+local function remove_empty_elements_blocks(raw)
+    local parsed = nft_source.parse(raw)
+    if not parsed then return raw end
+
+    local removals = {}
+    for _, set_spec in ipairs(parsed.sets) do
+        if set_spec.elements_start and trim(set_spec.elements_body or "") == "" then
+            removals[#removals + 1] = {
+                start_position = set_spec.elements_start,
+                finish_position = set_spec.elements_close
+            }
+        end
+    end
+
+    table.sort(removals, function(left, right)
+        return left.start_position > right.start_position
+    end)
+    for _, removal in ipairs(removals) do
+        raw = raw:sub(1, removal.start_position - 1) .. raw:sub(removal.finish_position + 1)
+    end
+    return raw
+end
+
 local function queue_geoip_elements(deferred, order, set_spec, values)
     local bucket = deferred[set_spec.key]
     if not bucket then
@@ -190,8 +213,10 @@ local function compile(raw)
         position = next_position
     end
     output[#output + 1] = raw:sub(position)
-    append_geoip_elements(output, deferred_order)
-    return table.concat(output), parsed, nil, warnings
+
+    local compiled_output = { remove_empty_elements_blocks(table.concat(output)) }
+    append_geoip_elements(compiled_output, deferred_order)
+    return table.concat(compiled_output), parsed, nil, warnings
 end
 
 local function table_command(verb, spec)
