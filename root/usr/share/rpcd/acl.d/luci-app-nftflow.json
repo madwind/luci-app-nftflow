@@ -40,7 +40,9 @@
                     "routing_save",
                     "routing_apply",
                     "geo_update",
+                    "geo_stop",
                     "update_install",
+                    "update_stop",
                     "action",
                     "service_sync"
                 ]
