@@ -503,7 +503,10 @@ local function component_status(kind)
     local state = read_state(kind)
     local installed = installed_version(PACKAGES[kind])
     local latest = state.latest_version
-    local available = latest and is_update_available(installed, latest) or nil
+    local available = nil
+    if latest then
+        available = is_update_available(installed, latest)
+    end
     return {
         kind = kind,
         installed_version = installed,
