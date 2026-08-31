@@ -28,6 +28,14 @@ var callGeoUpdate = rpc.declare({
     reject: true
 });
 
+var callGeoStop = rpc.declare({
+    object: 'luci.nftflow',
+    method: 'geo_stop',
+    params: [ 'kind' ],
+    expect: { '': {} },
+    reject: true
+});
+
 var callSoftwareStatus = rpc.declare({
     object: 'luci.nftflow',
     method: 'update_status',
@@ -46,6 +54,14 @@ var callSoftwareCheck = rpc.declare({
 var callSoftwareInstall = rpc.declare({
     object: 'luci.nftflow',
     method: 'update_install',
+    params: [ 'kind' ],
+    expect: { '': {} },
+    reject: true
+});
+
+var callSoftwareStop = rpc.declare({
+    object: 'luci.nftflow',
+    method: 'update_stop',
     params: [ 'kind' ],
     expect: { '': {} },
     reject: true
@@ -104,6 +120,7 @@ function softwarePhase(operation) {
     if (phase === 'downloading') return _('Downloading...');
     if (phase === 'verifying') return _('Verifying...');
     if (phase === 'installing') return _('Installing...');
+    if (phase === 'stopping') return _('Stopping...');
     if (phase === 'starting') return _('Starting update...');
     return _('Updating...');
 }
@@ -116,6 +133,17 @@ function formatTimestamp(value) {
     } catch (e) {
         return '—';
     }
+}
+
+function metaTag(label) {
+    var value = E('span', {}, '—');
+    var node = E('span', {
+        'style': 'display:inline-flex;align-items:center;gap:.35rem;padding:.15rem .45rem;border:1px solid rgba(127,127,127,.35);border-radius:.35rem;white-space:nowrap;'
+    }, [
+        E('span', { 'style': 'opacity:.7;' }, label),
+        value
+    ]);
+    return { node: node, value: value };
 }
 
 return view.extend({
@@ -171,10 +199,8 @@ return view.extend({
         function setRowMeta(row, checked, lastUpdate) {
             if (checked != null) row.checkedAt = Number(checked) || 0;
             if (lastUpdate != null) row.lastUpdateAt = Number(lastUpdate) || 0;
-            nftflowUi.setText(row.meta, _('Last check: %s · Last update: %s').format(
-                formatTimestamp(row.checkedAt),
-                formatTimestamp(row.lastUpdateAt)
-            ));
+            nftflowUi.setText(row.lastCheck, formatTimestamp(row.checkedAt));
+            nftflowUi.setText(row.lastUpdate, formatTimestamp(row.lastUpdateAt));
         }
 
         function setIdleStatus(row, available, fallback) {
@@ -186,6 +212,13 @@ return view.extend({
                 nftflowUi.setState(row.status, 'notice', fallback || _('Not checked'));
         }
 
+        function softwareCanStop(kind, operation) {
+            if (!operation || (operation.status !== 'starting' && operation.status !== 'running' && operation.status !== 'stopping'))
+                return false;
+            if (kind === 'xray') return false;
+            return operation.phase !== 'installing';
+        }
+
         function updateSoftwareRow(row, component) {
             component = component || {};
             var operation = component.operation || {};
@@ -193,19 +226,18 @@ return view.extend({
             setVersions(row, component.installed_version, component.latest_version);
             setRowMeta(row, component.checked, component.last_update);
 
-            if (operation.status === 'starting' || operation.status === 'running') {
-                nftflowUi.setState(row.status, 'notice', softwarePhase(operation));
+            if (operation.status === 'starting' || operation.status === 'running' || operation.status === 'stopping') {
+                nftflowUi.setState(row.status, 'notice', operation.status === 'stopping' ? _('Stopping...') : softwarePhase(operation));
                 row.check.disabled = true;
                 row.update.disabled = true;
+                row.stop.disabled = !softwareCanStop(row.kind, operation);
                 return;
             }
             if (operation.status === 'failed') {
                 nftflowUi.setState(row.status, 'error', operation.error || _('Update failed'));
-                row.check.disabled = false;
-                row.update.disabled = false;
-                return;
-            }
-            if (operation.status === 'done' && operation.updated === true && operation.post_check_error) {
+            } else if (operation.status === 'stopped') {
+                nftflowUi.setState(row.status, 'notice', _('Stopped'));
+            } else if (operation.status === 'done' && operation.updated === true && operation.post_check_error) {
                 nftflowUi.setState(row.status, 'warn', _('Updated · verification check failed'));
             } else if (component.no_release === true) {
                 nftflowUi.setState(row.status, 'notice', _('No published release'));
@@ -214,6 +246,7 @@ return view.extend({
             }
             row.check.disabled = false;
             row.update.disabled = component.update_available === false || component.no_release === true;
+            row.stop.disabled = true;
         }
 
         function updateGeoRow(row, asset, operation) {
@@ -226,36 +259,48 @@ return view.extend({
             setVersions(row, row.installedVersion, asset.latest_version || row.latestVersion);
             setRowMeta(row, asset.checked, asset.last_update);
 
-            if (operation.status === 'starting' || operation.status === 'running') {
-                nftflowUi.setState(row.status, 'notice', progressText(operation));
+            if (operation.status === 'starting' || operation.status === 'running' || operation.status === 'stopping') {
+                nftflowUi.setState(row.status, 'notice', operation.status === 'stopping' ? _('Stopping...') : progressText(operation));
                 row.check.disabled = true;
                 row.update.disabled = true;
+                row.stop.disabled = operation.status === 'stopping';
             } else if (operation.status === 'queued') {
                 nftflowUi.setState(row.status, 'notice', _('Waiting to download'));
                 row.check.disabled = true;
                 row.update.disabled = true;
+                row.stop.disabled = true;
             } else if (operation.status === 'failed') {
                 nftflowUi.setState(row.status, 'error', operation.error || _('Update failed'));
                 row.check.disabled = false;
                 row.update.disabled = false;
+                row.stop.disabled = true;
+            } else if (operation.status === 'stopped') {
+                nftflowUi.setState(row.status, 'notice', _('Stopped'));
+                row.check.disabled = false;
+                row.update.disabled = false;
+                row.stop.disabled = true;
             } else if (operation.status === 'done' && operation.updated === true && asset.post_check_error) {
                 nftflowUi.setState(row.status, 'warn', _('Updated · verification check failed'));
                 row.check.disabled = false;
                 row.update.disabled = row.updateAvailable === false;
+                row.stop.disabled = true;
             } else {
                 setIdleStatus(row, row.updateAvailable, asset.ready ? _('Not checked') : _('Missing'));
                 row.check.disabled = false;
                 row.update.disabled = row.updateAvailable === false;
+                row.stop.disabled = true;
             }
         }
 
         function createRow(kind) {
             var status = E('span', { 'aria-live': 'polite' }, _('Loading'));
+            var lastCheckTag = metaTag(_('Last check'));
+            var lastUpdateTag = metaTag(_('Last update'));
             var meta = E('div', {
-                'style': 'margin-top: .2rem; opacity: .7; font-size: .85em; white-space: normal;'
-            }, _('Last check: — · Last update: —'));
-            var installed = E('span', { 'style': 'font-family: monospace;' });
-            var latest = E('span', { 'style': 'font-family: monospace;' });
+                'style': 'margin-top:.35rem;display:flex;flex-wrap:wrap;justify-content:center;gap:.35rem;font-size:.82em;'
+            }, [ lastCheckTag.node, lastUpdateTag.node ]);
+            var installed = E('span', { 'style': 'font-family:monospace;' });
+            var latest = E('span', { 'style': 'font-family:monospace;' });
             var check = E('button', {
                 'class': 'btn cbi-button cbi-button-action',
                 'type': 'button'
@@ -264,14 +309,21 @@ return view.extend({
                 'class': 'btn cbi-button cbi-button-apply',
                 'type': 'button'
             }, _('Update'));
+            var stop = E('button', {
+                'class': 'btn cbi-button cbi-button-negative',
+                'type': 'button',
+                'disabled': ''
+            }, _('Stop'));
             var row = {
                 kind: kind,
                 status: status,
-                meta: meta,
+                lastCheck: lastCheckTag.value,
+                lastUpdate: lastUpdateTag.value,
                 installed: installed,
                 latest: latest,
                 check: check,
                 update: update,
+                stop: stop,
                 installedVersion: '',
                 latestVersion: '',
                 updateAvailable: null,
@@ -287,14 +339,17 @@ return view.extend({
             update.addEventListener('click', ui.createHandlerFn(update, function() {
                 return SOFTWARE_KINDS.indexOf(kind) >= 0 ? installSoftware(row) : installGeo(row);
             }));
+            stop.addEventListener('click', ui.createHandlerFn(stop, function() {
+                return stopUpdate(row);
+            }));
 
             tableBody.appendChild(E('tr', { 'class': 'tr' }, [
-                E('th', { 'class': 'th cbi-section-table-cell', 'data-title': _('Component'), 'style': 'width: 18%;' }, componentLabel(kind)),
-                E('td', { 'class': 'td cbi-section-table-cell', 'data-title': _('Installed'), 'style': 'width: 18%; text-align: center;' }, installed),
-                E('td', { 'class': 'td cbi-section-table-cell', 'data-title': _('Latest'), 'style': 'width: 18%; text-align: center;' }, latest),
-                E('td', { 'class': 'td cbi-section-table-cell', 'data-title': _('Status'), 'style': 'width: 28%; text-align: center;' }, [ status, meta ]),
-                E('td', { 'class': 'td cbi-section-table-cell', 'data-title': _('Actions'), 'style': 'width: 18%; text-align: right; white-space: nowrap;' }, [
-                    E('div', { 'style': 'display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: .5rem;' }, [ check, update ])
+                E('th', { 'class': 'th cbi-section-table-cell', 'data-title': _('Component'), 'style': 'width:16%;' }, componentLabel(kind)),
+                E('td', { 'class': 'td cbi-section-table-cell', 'data-title': _('Installed'), 'style': 'width:17%;text-align:center;' }, installed),
+                E('td', { 'class': 'td cbi-section-table-cell', 'data-title': _('Latest'), 'style': 'width:17%;text-align:center;' }, latest),
+                E('td', { 'class': 'td cbi-section-table-cell', 'data-title': _('Status'), 'style': 'width:30%;text-align:center;' }, [ status, meta ]),
+                E('td', { 'class': 'td cbi-section-table-cell', 'data-title': _('Actions'), 'style': 'width:20%;text-align:right;white-space:nowrap;' }, [
+                    E('div', { 'style': 'display:inline-flex;flex-wrap:wrap;justify-content:flex-end;gap:.5rem;' }, [ check, update, stop ])
                 ])
             ]));
         }
@@ -324,12 +379,11 @@ return view.extend({
         function checkSoftware(row) {
             row.check.disabled = true;
             row.update.disabled = true;
+            row.stop.disabled = true;
             nftflowUi.setState(row.status, 'notice', _('Checking...'));
             return callSoftwareCheck(row.kind).then(function(result) {
                 return nftflowUi.requireOk(result, _('%s check failed.').format(componentLabel(row.kind)));
             }).then(function(result) {
-                row.updateAvailable = result.update_available;
-                setRowMeta(row, result.checked, result.last_update);
                 updateSoftwareRow(row, {
                     installed_version: result.installed_version,
                     latest_version: result.latest_version,
@@ -344,6 +398,7 @@ return view.extend({
                 nftflowUi.setState(row.status, 'error', nftflowUi.errorMessage(error, _('%s check failed.').format(componentLabel(row.kind))));
                 row.check.disabled = false;
                 row.update.disabled = false;
+                row.stop.disabled = true;
                 return false;
             });
         }
@@ -351,17 +406,16 @@ return view.extend({
         function checkGeo(row) {
             row.check.disabled = true;
             row.update.disabled = true;
+            row.stop.disabled = true;
             nftflowUi.setState(row.status, 'notice', _('Checking...'));
             return callGeoCheck(row.kind).then(function(result) {
                 return nftflowUi.requireOk(result, _('%s check failed.').format(componentLabel(row.kind)));
             }).then(function(result) {
                 row.installedVersion = result.local_version || geoVersion(result.local_asset) || row.installedVersion;
                 row.latestVersion = result.remote_version || row.latestVersion;
-                row.updateAvailable = result.update_available;
-                setRowMeta(row, result.checked, result.last_update);
                 var asset = result.local_asset || row.asset || { kind: row.kind };
                 asset.latest_version = row.latestVersion;
-                asset.update_available = row.updateAvailable;
+                asset.update_available = result.update_available;
                 asset.checked = result.checked;
                 asset.last_update = result.last_update;
                 updateGeoRow(row, asset, { status: 'idle' });
@@ -370,13 +424,14 @@ return view.extend({
                 nftflowUi.setState(row.status, 'error', nftflowUi.errorMessage(error, _('%s check failed.').format(componentLabel(row.kind))));
                 row.check.disabled = false;
                 row.update.disabled = false;
+                row.stop.disabled = true;
                 return false;
             });
         }
 
-        function monitorSoftware(row) {
+        function monitor(row, statusCall, applySnapshot, operationForResult, timeoutMs) {
             if (monitorTasks[row.kind]) return monitorTasks[row.kind];
-            var deadline = Date.now() + 5 * 60 * 1000;
+            var deadline = Date.now() + timeoutMs;
             var task;
             var request = null;
             var finish;
@@ -397,13 +452,12 @@ return view.extend({
                         finish(new Error(_('%s update timed out.').format(componentLabel(row.kind))));
                         return Promise.resolve();
                     }
-                    request = callSoftwareStatus().then(function(result) {
+                    request = statusCall().then(function(result) {
                         if (!result || result.ok !== true)
-                            throw new Error(nftflowUi.errorMessage(result, _('Unable to read software update status.')));
-                        var component = result.components && result.components[row.kind] || {};
-                        updateSoftwareRow(row, component);
-                        var operation = component.operation || {};
-                        if (operation.status === 'done') finish(null, result);
+                            throw new Error(nftflowUi.errorMessage(result, _('Unable to read update status.')));
+                        applySnapshot(result);
+                        var operation = operationForResult(result);
+                        if (operation.status === 'done' || operation.status === 'stopped') finish(null, result);
                         else if (operation.status === 'failed') finish(new Error(operation.error || _('Update failed')));
                         return result;
                     }).catch(function(error) {
@@ -426,71 +480,39 @@ return view.extend({
             return monitoring;
         }
 
+        function monitorSoftware(row) {
+            return monitor(row, callSoftwareStatus, applySoftwareSnapshot, function(result) {
+                return result.components && result.components[row.kind] && result.components[row.kind].operation || {};
+            }, 5 * 60 * 1000);
+        }
+
         function monitorGeo(row) {
-            if (monitorTasks[row.kind]) return monitorTasks[row.kind];
-            var deadline = Date.now() + 10 * 60 * 1000;
-            var task;
-            var request = null;
-            var finish;
-            var monitoring = new Promise(function(resolve, reject) {
-                finish = function(error, result) {
-                    poll.remove(task);
-                    delete monitorTasks[row.kind];
-                    delete monitorStops[row.kind];
-                    if (error) reject(error); else resolve(result);
-                };
-                task = function() {
-                    if (request) return request;
-                    if (!pageVisible) {
-                        finish(new Error(_('Update monitoring stopped because the page was closed.')));
-                        return Promise.resolve();
-                    }
-                    if (Date.now() >= deadline) {
-                        finish(new Error(_('%s update timed out.').format(componentLabel(row.kind))));
-                        return Promise.resolve();
-                    }
-                    request = callGeoStatus().then(function(result) {
-                        if (!result || result.ok !== true)
-                            throw new Error(nftflowUi.errorMessage(result, _('Unable to read GeoData update status.')));
-                        var asset = result.assets && result.assets[row.kind] || row.asset;
-                        var operation = geoOperation(asset, result.update);
-                        updateGeoRow(row, asset, operation);
-                        if (operation.status === 'done') finish(null, result);
-                        else if (operation.status === 'failed') finish(new Error(operation.error || _('Update failed')));
-                        return result;
-                    }).catch(function(error) {
-                        if (Date.now() >= deadline) finish(error);
-                        else nftflowUi.setState(row.status, 'notice', _('Retrying status...'));
-                        return null;
-                    }).then(function(result) {
-                        request = null;
-                        return result;
-                    });
-                    return request;
-                };
-            });
-            monitorTasks[row.kind] = monitoring;
-            monitorStops[row.kind] = function() {
-                if (finish) finish(new Error(_('Update monitoring stopped because the page was closed.')));
-            };
-            poll.add(task, L.env.pollinterval);
-            task();
-            return monitoring;
+            return monitor(row, callGeoStatus, applyGeoSnapshot, function(result) {
+                var asset = result.assets && result.assets[row.kind] || row.asset;
+                return geoOperation(asset, result.update);
+            }, 10 * 60 * 1000);
         }
 
         function installSoftware(row) {
             row.check.disabled = true;
             row.update.disabled = true;
+            row.stop.disabled = true;
             nftflowUi.setState(row.status, 'notice', _('Starting update...'));
             return callSoftwareInstall(row.kind).then(function(result) {
-                return nftflowUi.requireOk(result, _('%s update could not start.').format(componentLabel(row.kind)));
-            }).then(function() {
+                result = nftflowUi.requireOk(result, _('%s update could not start.').format(componentLabel(row.kind)));
+                updateSoftwareRow(row, {
+                    installed_version: row.installedVersion,
+                    latest_version: row.latestVersion,
+                    update_available: row.updateAvailable,
+                    operation: result
+                });
                 return monitorSoftware(row);
             }).catch(function(error) {
                 if (!pageVisible) return false;
                 nftflowUi.setState(row.status, 'error', nftflowUi.errorMessage(error, _('%s update failed.').format(componentLabel(row.kind))));
                 row.check.disabled = false;
                 row.update.disabled = false;
+                row.stop.disabled = true;
                 return false;
             });
         }
@@ -500,17 +522,31 @@ return view.extend({
             row.update.disabled = true;
             updateGeoRow(row, row.asset, { status: 'starting' });
             return callGeoUpdate(row.kind).then(function(result) {
-                return nftflowUi.requireOk(result, _('%s update could not start.').format(componentLabel(row.kind)));
-            }).then(function() {
+                result = nftflowUi.requireOk(result, _('%s update could not start.').format(componentLabel(row.kind)));
+                updateGeoRow(row, row.asset, result);
                 return monitorGeo(row);
-            }).then(function(result) {
-                applyGeoSnapshot(result);
-                return result;
             }).catch(function(error) {
                 if (!pageVisible) return false;
                 nftflowUi.setState(row.status, 'error', nftflowUi.errorMessage(error, _('%s update failed.').format(componentLabel(row.kind))));
                 row.check.disabled = false;
                 row.update.disabled = false;
+                row.stop.disabled = true;
+                return false;
+            });
+        }
+
+        function stopUpdate(row) {
+            row.stop.disabled = true;
+            nftflowUi.setState(row.status, 'notice', _('Stopping...'));
+            var software = SOFTWARE_KINDS.indexOf(row.kind) >= 0;
+            var call = software ? callSoftwareStop : callGeoStop;
+            return call(row.kind).then(function(result) {
+                return nftflowUi.requireOk(result, _('%s update could not be stopped.').format(componentLabel(row.kind)));
+            }).then(function() {
+                return software ? callSoftwareStatus().then(applySoftwareSnapshot) : callGeoStatus().then(applyGeoSnapshot);
+            }).catch(function(error) {
+                nftflowUi.setState(row.status, 'error', nftflowUi.errorMessage(error, _('%s update could not be stopped.').format(componentLabel(row.kind))));
+                row.stop.disabled = false;
                 return false;
             });
         }
@@ -562,19 +598,19 @@ return view.extend({
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Updates')),
             E('div', { 'class': 'cbi-map-descr' }, _('Check and install NftFlow, Xray Core and GeoData updates. Update sources and local paths are configured in Settings.')),
             E('div', { 'class': 'cbi-section' }, [
-                E('div', { 'style': 'display: flex; align-items: center; justify-content: space-between; gap: 1rem;' }, [
-                    E('h3', { 'class': 'cbi-section-title', 'style': 'margin-bottom: 0;' }, _('Components')),
+                E('div', { 'style': 'display:flex;align-items:center;justify-content:space-between;gap:1rem;' }, [
+                    E('h3', { 'class': 'cbi-section-title', 'style': 'margin-bottom:0;' }, _('Components')),
                     checkAll
                 ]),
-                E('div', { 'class': 'cbi-section-descr', 'style': 'margin-top: .75rem;' }, automatic),
+                E('div', { 'class': 'cbi-section-descr', 'style': 'margin-top:.75rem;' }, automatic),
                 message,
                 E('table', { 'class': 'table cbi-section-table' }, [
                     E('thead', {}, [ E('tr', { 'class': 'tr' }, [
-                        E('th', { 'class': 'th', 'style': 'width: 18%;' }, _('Component')),
-                        E('th', { 'class': 'th', 'style': 'width: 18%; text-align: center;' }, _('Installed')),
-                        E('th', { 'class': 'th', 'style': 'width: 18%; text-align: center;' }, _('Latest')),
-                        E('th', { 'class': 'th', 'style': 'width: 28%; text-align: center;' }, _('Status')),
-                        E('th', { 'class': 'th', 'style': 'width: 18%; text-align: right;' }, _('Actions'))
+                        E('th', { 'class': 'th', 'style': 'width:16%;' }, _('Component')),
+                        E('th', { 'class': 'th', 'style': 'width:17%;text-align:center;' }, _('Installed')),
+                        E('th', { 'class': 'th', 'style': 'width:17%;text-align:center;' }, _('Latest')),
+                        E('th', { 'class': 'th', 'style': 'width:30%;text-align:center;' }, _('Status')),
+                        E('th', { 'class': 'th', 'style': 'width:20%;text-align:right;' }, _('Actions'))
                     ]) ]),
                     tableBody
                 ])
