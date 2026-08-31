@@ -68,13 +68,6 @@
             },
             {
                 "type": "field",
-                "domain": [
-                    "geosite:google"
-                ],
-                "outboundTag": "proxy"
-            },
-            {
-                "type": "field",
                 "ip": [
                     "1.1.1.1",
                     "8.8.8.8"
@@ -87,6 +80,13 @@
                     "geoip:cn"
                 ],
                 "outboundTag": "direct"
+            },
+            {
+                "type": "field",
+                "domain": [
+                    "geosite:google"
+                ],
+                "outboundTag": "proxy"
             },
             {
                 "type": "field",
@@ -149,12 +149,6 @@
             "streamSettings": {
                 "network": "xhttp",
                 "security": "tls",
-                "tlsSettings": {
-                    "allowInsecure": false,
-                    "alpn": [
-                        "h2"
-                    ]
-                },
                 "xhttpSettings": {
                     "path": "/path",
                     "mode": "stream-one"
