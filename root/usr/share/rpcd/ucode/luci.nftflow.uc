@@ -10,6 +10,7 @@ const RUNTIME = '/var/run/nftflow';
 const CTL = '/usr/libexec/nftflow/nftflowctl';
 const GEO_UPDATE = '/usr/libexec/nftflow/geo-update.lua';
 const SOFTWARE_UPDATE = '/usr/libexec/nftflow/update.lua';
+const STOP_UPDATE = '/usr/libexec/nftflow/stop-update.lua';
 const GEO_CRON_TAG = 'nftflow-geodata-weekly';
 const RPC_DIRECTORY_MODE = 448;
 const RPC_FILE_MODE = 384;
@@ -57,6 +58,10 @@ function run_software_update(command, kind) {
     let line = `/usr/bin/lua ${SOFTWARE_UPDATE} ${shellquote(command)}`;
     if (kind) line += ` ${shellquote(kind)}`;
     return run_command(line);
+}
+
+function run_stop_update(kind) {
+    return run_command(`/usr/bin/lua ${STOP_UPDATE} ${shellquote(kind)}`);
 }
 
 function merge_geo_cache(asset, cached) {
@@ -203,6 +208,14 @@ const methods = {
             return run_geo_update('start', kind);
         }
     },
+    geo_stop: {
+        args: { kind: 'geosite' },
+        call: request => {
+            let kind = request && request.args ? request.args.kind || '' : '';
+            if (!valid_kind(kind)) return { ok: false, error: 'invalid geodata kind' };
+            return run_stop_update(kind);
+        }
+    },
     update_status: { args: {}, call: () => run_software_update('status') },
     update_check: {
         args: { kind: 'nftflow' },
@@ -218,6 +231,14 @@ const methods = {
             let kind = request && request.args ? request.args.kind || '' : '';
             if (!valid_update_kind(kind)) return { ok: false, error: 'invalid update kind' };
             return run_software_update('start', kind);
+        }
+    },
+    update_stop: {
+        args: { kind: 'nftflow' },
+        call: request => {
+            let kind = request && request.args ? request.args.kind || '' : '';
+            if (!valid_update_kind(kind)) return { ok: false, error: 'invalid update kind' };
+            return run_stop_update(kind);
         }
     },
     action: {
