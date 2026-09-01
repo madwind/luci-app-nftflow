@@ -21,7 +21,15 @@ var callAction = rpc.declare({
     reject: true
 });
 
+var callLogRead = rpc.declare({
+    object: 'log',
+    method: 'read',
+    params: [ 'lines', 'stream', 'oneshot' ],
+    expect: { log: [] }
+});
+
 var LOG_TAG = 'nftflowctl';
+var LOG_FETCH_LINES = 1000;
 var LOG_LINES = 300;
 var LOG_MAX_BYTES = 96 * 1024;
 var LOG_RECONNECT_MS = 2000;
@@ -142,7 +150,7 @@ return view.extend({
         var firewall = E('span', { 'aria-live': 'polite' });
         var routing = E('span', { 'aria-live': 'polite' });
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
-        var logState = E('span', { 'aria-live': 'polite' }, _('Connecting'));
+        var logState = E('span', { 'aria-live': 'polite' }, _('Loading'));
         var logFilter = E('input', {
             'class': 'cbi-input-text',
             'type': 'search',
@@ -171,6 +179,10 @@ return view.extend({
         var pageVisible = true;
         var followLogs = true;
         var logLines = [];
+        var initialLogsLoaded = false;
+        var pendingLiveEntries = [];
+        var recentLogKeys = Object.create(null);
+        var recentLogKeyOrder = [];
         var streamController = null;
         var reconnectTimer = null;
 
@@ -277,15 +289,66 @@ return view.extend({
                 logOutput.scrollTop = oldScrollTop;
         }
 
-        function appendLogEntry(entry) {
+        function isRelevantLogEntry(entry) {
             var logMessage = entry && entry.msg != null ? String(entry.msg) : '';
+            return logMessage.toLowerCase().indexOf(LOG_TAG) !== -1;
+        }
 
-            if (logMessage.toLowerCase().indexOf(LOG_TAG) === -1)
+        function logEntryKey(entry) {
+            return String(entry && entry.time != null ? entry.time : '') + '\n' +
+                String(entry && entry.priority != null ? entry.priority : '') + '\n' +
+                String(entry && entry.msg != null ? entry.msg : '');
+        }
+
+        function rememberLogEntry(entry) {
+            var key = logEntryKey(entry);
+            if (recentLogKeys[key])
+                return false;
+
+            recentLogKeys[key] = true;
+            recentLogKeyOrder.push(key);
+            while (recentLogKeyOrder.length > LOG_FETCH_LINES * 2)
+                delete recentLogKeys[recentLogKeyOrder.shift()];
+            return true;
+        }
+
+        function appendLogEntry(entry) {
+            if (!isRelevantLogEntry(entry))
+                return;
+            if (!initialLogsLoaded) {
+                pendingLiveEntries.push(entry);
+                return;
+            }
+            if (!rememberLogEntry(entry))
                 return;
 
             logLines.push(formatLogEntry(entry, formatter));
             logLines = nftflowUi.boundedLines(logLines, LOG_LINES, LOG_MAX_BYTES);
             renderLogs();
+        }
+
+        function mergeInitialLogs(entries) {
+            var merged = [];
+
+            (Array.isArray(entries) ? entries : []).concat(pendingLiveEntries).forEach(function(entry) {
+                if (!isRelevantLogEntry(entry) || !rememberLogEntry(entry))
+                    return;
+                merged.push(formatLogEntry(entry, formatter));
+            });
+
+            pendingLiveEntries = [];
+            initialLogsLoaded = true;
+            logLines = nftflowUi.boundedLines(merged, LOG_LINES, LOG_MAX_BYTES);
+            renderLogs();
+        }
+
+        function loadInitialLogs() {
+            return callLogRead(LOG_FETCH_LINES, false, true).then(function(entries) {
+                mergeInitialLogs(entries);
+            }).catch(function(error) {
+                console.warn(error);
+                mergeInitialLogs([]);
+            });
         }
 
         function consumeSseFrame(frame) {
@@ -501,6 +564,7 @@ return view.extend({
             poll.remove(refreshStatus);
         }, { once: true });
 
+        loadInitialLogs();
         startLogStream();
 
         var root = E('div', { 'class': 'cbi-map' }, [
