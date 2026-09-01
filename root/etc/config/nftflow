@@ -8,6 +8,8 @@ config nftflow 'main'
     option geosite_file '/usr/share/xray/geosite.dat'
     option geoip_url 'https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat'
     option geosite_url 'https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat'
+    option geoip_auto_update '0'
+    option geosite_auto_update '0'
 
     # The JSON editor owns Xray's complete core configuration. These options
     # only describe the OpenWrt process and runtime outside that JSON file.

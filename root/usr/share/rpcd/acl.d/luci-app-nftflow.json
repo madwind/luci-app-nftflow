@@ -24,8 +24,8 @@
                     "update_status",
                     "update_check"
                 ],
-                "luci.nftflow.defaults": [
-                    "firewall"
+                "luci.nftflow.geoops": [
+                    "status"
                 ]
             }
         },
@@ -48,6 +48,10 @@
                     "update_stop",
                     "action",
                     "service_sync"
+                ],
+                "luci.nftflow.geoops": [
+                    "set_auto",
+                    "update"
                 ]
             }
         }

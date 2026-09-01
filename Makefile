@@ -76,7 +76,7 @@ fi
 	rm -f /tmp/luci-indexcache /tmp/luci-indexcache.* /tmp/luci-modulecache /tmp/luci-modulecache.*
 	rm -rf /tmp/luci-modulecache/
 	/etc/init.d/rpcd reload 2>/dev/null
-	/etc/init.d/nftflow geodata_schedule >/dev/null 2>&1 || logger -t nftflow "cannot install weekly GeoData update schedule"
+	/usr/libexec/nftflow/geo-auto.sh sync >/dev/null 2>&1 || logger -t nftflow "cannot synchronize automatic GeoData update schedule"
 	if [ "$$(uci -q get nftflow.main.enabled 2>/dev/null)" = "1" ]; then
 		/etc/init.d/nftflow enable >/dev/null 2>&1 || true
 		/etc/init.d/nftflow start >/dev/null 2>&1 || logger -t nftflow "service restart after package upgrade failed"
@@ -89,9 +89,6 @@ endef
 
 define Package/luci-app-nftflow/prerm
 #!/bin/sh
-# Stop and clean runtime state while the control script and init script still
-# exist.  Removal also disables the service and removes its GeoData cron entry;
-# an upgrade keeps both persistent service settings and the cron schedule.
 [ -n "$${IPKG_INSTROOT}" ] || {
     case "$${1:-remove}" in
         upgrade)
@@ -99,6 +96,7 @@ define Package/luci-app-nftflow/prerm
             [ -x /usr/libexec/nftflow/nftflowctl ] && /usr/libexec/nftflow/nftflowctl cleanup >/dev/null 2>&1 || true
             ;;
         *)
+            [ -x /usr/libexec/nftflow/geo-auto.sh ] && /usr/libexec/nftflow/geo-auto.sh remove >/dev/null 2>&1 || true
             [ -x /etc/init.d/nftflow ] && /etc/init.d/nftflow uninstall >/dev/null 2>&1 || true
             ;;
     esac
