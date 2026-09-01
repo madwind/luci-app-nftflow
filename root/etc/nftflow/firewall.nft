@@ -4,50 +4,45 @@ table inet nftflow {
         flags interval
         auto-merge
         elements = {
-            %geoip:private%,
-            %geoip:cn%
+            0.0.0.0/8, 10.0.0.0/8,
+            100.64.0.0/10, 127.0.0.0/8,
+            169.254.0.0/16, 172.16.0.0/12,
+            192.168.0.0/16, 224.0.0.0/4,
+            240.0.0.0/4, %geoip:cn%
         }
     }
+
     chain nftflow_prerouting {
         type filter hook prerouting priority mangle - 1;
         policy accept;
-        # Do not process reply direction again.
+
         ct direction reply counter return
-        # Traffic already claimed by another interceptor bypasses Xray.
         meta mark & 0x00010000 != 0 counter return
-        # Local router services, especially dnsmasq, must bypass TPROXY.
+        meta nfproto != ipv4 return
+
+        udp dport { 67, 68 } return
+        ip daddr 255.255.255.255 return
+        ip daddr 224.0.0.0/4 return
+
+        meta l4proto { tcp, udp } th dport 53 counter return
         fib daddr type local return
-        # Always intercept DNS before local/private bypass.
-        meta l4proto {
-            tcp, udp
-        } th dport 53 counter return
-        # Local destinations bypass proxy.
-        fib daddr type local return
-        # Private/reserved destinations bypass proxy.
         ip daddr @nftflow_bypass4 return
-        # Proxy all remaining TCP/UDP traffic.
-        meta l4proto {
-            tcp, udp
-        } meta mark set 1 tproxy to :12345 counter accept
+
+        meta l4proto { tcp, udp } meta mark set meta mark | 0x00000001 tproxy to :12345 counter accept
     }
+
     chain nftflow_output {
         type route hook output priority mangle - 1;
         policy accept;
-        # Xray itself bypasses proxy to avoid loops.
+
         meta skgid 23333 counter return
-        # DNS is handled by dnsmasq or forwarded directly; avoid dns-out recursion.
-        meta l4proto {
-            tcp, udp
-        } th dport 53 counter return
-        # Reply traffic bypasses proxy.
         ct direction reply counter return
-        # Local destinations bypass proxy.
+        meta nfproto != ipv4 return
+
+        meta l4proto { tcp, udp } th dport 53 counter return
         fib daddr type local return
-        # Private/reserved destinations bypass proxy.
         ip daddr @nftflow_bypass4 return
-        # Mark all remaining locally-generated TCP/UDP traffic.
-        meta l4proto {
-            tcp, udp
-        } meta mark set 1 counter accept
+
+        meta l4proto { tcp, udp } meta mark set meta mark | 0x00000001 counter accept
     }
 }
