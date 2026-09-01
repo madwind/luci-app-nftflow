@@ -4,120 +4,15 @@
 'require poll';
 'require nftflow.ui as nftflowUi';
 'require nftflow.editor as nftflowEditor';
+'require nftflow.nftformat as nftflowNftFormat';
 
-var callRead = rpc.declare({
-    object: 'luci.nftflow',
-    method: 'firewall_read',
-    expect: { '': {} },
-    reject: true
-});
-
-var callValidate = rpc.declare({
-    object: 'luci.nftflow',
-    method: 'firewall_validate',
-    params: [ 'config' ],
-    expect: { '': {} },
-    reject: true
-});
-
-var callSave = rpc.declare({
-    object: 'luci.nftflow',
-    method: 'firewall_save',
-    params: [ 'config' ],
-    expect: { '': {} },
-    reject: true
-});
-
-var callApply = rpc.declare({
-    object: 'luci.nftflow',
-    method: 'firewall_apply',
-    params: [ 'config' ],
-    expect: { '': {} },
-    reject: true
-});
+var callRead = rpc.declare({ object: 'luci.nftflow', method: 'firewall_read', expect: { '': {} }, reject: true });
+var callValidate = rpc.declare({ object: 'luci.nftflow', method: 'firewall_validate', params: [ 'config' ], expect: { '': {} }, reject: true });
+var callSave = rpc.declare({ object: 'luci.nftflow', method: 'firewall_save', params: [ 'config' ], expect: { '': {} }, reject: true });
+var callApply = rpc.declare({ object: 'luci.nftflow', method: 'firewall_apply', params: [ 'config' ], expect: { '': {} }, reject: true });
+var callDefault = rpc.declare({ object: 'luci.nftflow.defaults', method: 'firewall', expect: { '': {} }, reject: true });
 
 var RUNTIME_REFRESH_INTERVAL = 10;
-
-function formatNftables(source) {
-    var text = String(source || '').replace(/\r\n?/g, '\n');
-    var lines = [];
-    var line = '';
-    var indent = 0;
-    var quoted = false;
-    var escaped = false;
-    var comment = false;
-
-    function flush() {
-        var value = line.trim();
-        if (value)
-            lines.push('    '.repeat(indent) + value);
-        line = '';
-    }
-
-    function space() {
-        if (line && !/\s$/.test(line))
-            line += ' ';
-    }
-
-    for (var i = 0; i < text.length; i++) {
-        var character = text.charAt(i);
-
-        if (comment) {
-            if (character === '\n') {
-                flush();
-                comment = false;
-            } else {
-                line += character;
-            }
-            continue;
-        }
-
-        if (quoted) {
-            line += character;
-            if (escaped)
-                escaped = false;
-            else if (character === '\\')
-                escaped = true;
-            else if (character === '"')
-                quoted = false;
-            continue;
-        }
-
-        if (character === '#') {
-            space();
-            line += character;
-            comment = true;
-        } else if (character === '"') {
-            line += character;
-            quoted = true;
-        } else if (character === '{') {
-            space();
-            line += '{';
-            flush();
-            indent++;
-        } else if (character === '}') {
-            flush();
-            indent = Math.max(0, indent - 1);
-            line = '}';
-        } else if (character === ';') {
-            line = line.replace(/\s+$/, '') + ';';
-            flush();
-        } else if (character === '\n') {
-            flush();
-        } else if (/\s/.test(character)) {
-            space();
-        } else {
-            if (line === '}')
-                line += ' ';
-            line += character;
-            if (character === ',' && line.length >= 96)
-                flush();
-        }
-    }
-
-    flush();
-    return lines.join('\n') + (lines.length ? '\n' : '');
-}
 
 function resultDetail(result, fallback) {
     var detail = [ result && result.error, result && result.detail ].filter(Boolean).join(': ');
@@ -186,7 +81,6 @@ return view.extend({
 
         function reloadFirewall(current) {
             setMessage('notice', _('Reloading the saved Firewall file...'));
-
             return callRead().then(function(next) {
                 return nftflowUi.requireOk(next, _('Unable to read the Firewall file.'));
             }).then(function(next) {
@@ -200,17 +94,31 @@ return view.extend({
             });
         }
 
+        function loadDefaultFirewall(current) {
+            setMessage('notice', _('Loading default Firewall template...'));
+            return callDefault().then(function(next) {
+                return nftflowUi.requireOk(next, _('Unable to read the default Firewall template.'));
+            }).then(function(next) {
+                current.setValue(next.config || '');
+                current.focus();
+                setMessage('notice', _('Default Firewall template loaded in the editor. Review before applying.'));
+                return true;
+            }).catch(function(error) {
+                setMessage('error', nftflowUi.errorMessage(error, _('Unable to read the default Firewall template.')));
+                return false;
+            });
+        }
+
         function withinLimit(current) {
             if (current.withinLimit())
                 return true;
-
             current.focus();
             setMessage('error', _('The Firewall file is larger than 32 KiB.'));
             return false;
         }
 
         function formatFirewall(current) {
-            current.setValue(formatNftables(current.getValue()));
+            current.setValue(nftflowNftFormat.format(current.getValue()));
             current.focus();
             setMessage('ok', _('Formatted in the editor. Review before applying.'));
             return Promise.resolve(true);
@@ -219,7 +127,6 @@ return view.extend({
         function checkFirewall(current) {
             if (!withinLimit(current))
                 return Promise.resolve(false);
-
             setMessage('notice', _('Checking Firewall syntax...'));
             return callValidate(current.getValue()).then(function(next) {
                 if (!next || next.valid !== true)
@@ -238,7 +145,6 @@ return view.extend({
         function applyFirewall(current) {
             if (!withinLimit(current))
                 return Promise.resolve(false);
-
             setMessage('notice', _('Applying Firewall rules to runtime...'));
             return callApply(current.getValue()).then(function(next) {
                 return nftflowUi.requireOk(next, _('Unable to apply Firewall rules.'));
@@ -296,6 +202,7 @@ return view.extend({
             rows: 32,
             format: formatFirewall,
             check: checkFirewall,
+            loadDefault: loadDefaultFirewall,
             reload: reloadFirewall,
             apply: applyFirewall,
             applySave: applySaveFirewall
@@ -335,11 +242,7 @@ return view.extend({
         return E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Firewall')),
             E('div', { 'class': 'cbi-map-descr' }, _('Edit the nftables source. Apply changes temporarily or apply and save them permanently.')),
-            E('div', { 'class': 'cbi-section' }, [
-                geoipHelp,
-                editor.root,
-                message
-            ]),
+            E('div', { 'class': 'cbi-section' }, [ geoipHelp, editor.root, message ]),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Runtime rules')),
                 runtimeToolbar,

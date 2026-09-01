@@ -23,6 +23,9 @@
                     "geo_check",
                     "update_status",
                     "update_check"
+                ],
+                "luci.nftflow.defaults": [
+                    "firewall"
                 ]
             }
         },
