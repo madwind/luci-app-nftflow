@@ -169,7 +169,12 @@ return view.extend({
             asset = asset || row.asset || { kind: row.kind };
             operation = operation || geoOperation(asset, null);
             row.asset = asset;
-            if (asset.update_available !== undefined) row.updateAvailable = asset.update_available;
+            if (asset.ready === false) {
+                row.updateAvailable = null;
+                row.installedVersion = '';
+            } else if (asset.update_available !== undefined) {
+                row.updateAvailable = asset.update_available;
+            }
             var local = geoVersion(asset) || row.installedVersion || '';
             if (local) row.installedVersion = local;
             setVersions(row, row.installedVersion, asset.latest_version || row.latestVersion);
