@@ -55,16 +55,6 @@ function resultDetail(result, fallback) {
     return detail || fallback;
 }
 
-function geodataFallbackDetail(result) {
-    var replacements = result && Array.isArray(result.geodata_replacements) ? result.geodata_replacements : [];
-    if (!replacements.length)
-        return '';
-
-    return replacements.map(function(item) {
-        return '%s -> %s'.format(item.from, item.to);
-    }).join(', ');
-}
-
 return view.extend({
     load: function() {
         return L.resolveDefault(callConfigRead(), { ok: false, error: _('Unable to read the Xray JSON file.') });
@@ -110,11 +100,7 @@ return view.extend({
             return callConfigValidate(current.getValue()).then(function(next) {
                 if (!next || next.valid !== true)
                     throw new Error(resultDetail(next, _('Xray configuration test failed.')));
-                var fallback = geodataFallbackDetail(next);
-                if (fallback)
-                    setMessage('notice', _('Xray configuration test passed with temporary GeoData fallback: %s').format(fallback));
-                else
-                    setMessage('ok', _('Xray configuration test passed.'));
+                setMessage('ok', _('Xray configuration test passed.'));
                 return true;
             }).catch(function(error) {
                 setMessage('error', nftflowUi.errorMessage(error, _('Xray configuration test failed.')));
@@ -143,12 +129,8 @@ return view.extend({
             setMessage('notice', _('Applying Xray configuration to runtime...'));
             return callConfigApply(current.getValue()).then(function(next) {
                 return nftflowUi.requireOk(next, _('Unable to apply the Xray configuration.'));
-            }).then(function(next) {
-                var fallback = geodataFallbackDetail(next);
-                if (fallback)
-                    setMessage('notice', _('Applied with temporary GeoData fallback: %s').format(fallback));
-                else
-                    setMessage('ok', _('Applied to runtime; the saved file was not changed.'));
+            }).then(function() {
+                setMessage('ok', _('Applied to runtime; the saved file was not changed.'));
                 return true;
             }).catch(function(error) {
                 setMessage('error', nftflowUi.errorMessage(error, _('Unable to apply the Xray configuration.')));
@@ -161,13 +143,11 @@ return view.extend({
                 return Promise.resolve(false);
 
             var applied = false;
-            var appliedResult;
             var value = current.getValue();
             setMessage('notice', _('Applying Xray configuration and saving the file...'));
 
             return callConfigApply(value).then(function(next) {
-                appliedResult = nftflowUi.requireOk(next, _('Unable to apply the Xray configuration.'));
-                return appliedResult;
+                return nftflowUi.requireOk(next, _('Unable to apply the Xray configuration.'));
             }).then(function() {
                 applied = true;
                 return callConfigSave(value);
@@ -175,11 +155,7 @@ return view.extend({
                 return nftflowUi.requireOk(next, _('The Xray JSON file could not be saved.'));
             }).then(function(next) {
                 current.markSaved(next.config === undefined ? value : next.config);
-                var fallback = geodataFallbackDetail(appliedResult);
-                if (fallback)
-                    setMessage('notice', _('Applied and saved; runtime used temporary GeoData fallback: %s').format(fallback));
-                else
-                    setMessage('ok', _('Applied to runtime and saved to the Xray JSON file.'));
+                setMessage('ok', _('Applied to runtime and saved to the Xray JSON file.'));
                 return true;
             }).catch(function(error) {
                 var fallback = applied
