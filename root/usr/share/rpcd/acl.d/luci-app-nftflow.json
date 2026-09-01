@@ -24,6 +24,9 @@
                     "update_status",
                     "update_check"
                 ],
+                "luci.nftflow.defaults": [
+                    "firewall"
+                ],
                 "luci.nftflow.geoops": [
                     "status"
                 ]
