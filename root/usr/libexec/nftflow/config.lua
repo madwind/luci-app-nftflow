@@ -5,7 +5,6 @@
 local jsonc = require "luci.jsonc"
 local nixio = require "nixio"
 local nixio_fs = require "nixio.fs"
-local geodata_fallback = dofile "/usr/libexec/nftflow/geodata-fallback.lua"
 
 local RUNTIME = "/var/run/nftflow"
 local APPLIED_CONFIG = RUNTIME .. "/config.applied.json"
@@ -150,13 +149,8 @@ local function validate(raw)
         return { ok = false, valid = false, error = "cannot create " .. RUNTIME }
     end
 
-    local runtime_source, replacements, fallback_error = geodata_fallback.prepare(source, main.asset_dir)
-    if not runtime_source then
-        return { ok = false, valid = false, error = fallback_error or "GeoData fallback preparation failed" }
-    end
-
     local check_path = temporary_path(RUNTIME .. "/config-check.json")
-    local saved, save_error = write_atomic(check_path, runtime_source, 600)
+    local saved, save_error = write_atomic(check_path, source, 600)
     if not saved then return { ok = false, valid = false, error = save_error } end
 
     local command = "XRAY_LOCATION_ASSET=" .. shellquote(main.asset_dir) .. " " ..
@@ -169,8 +163,7 @@ local function validate(raw)
         valid = valid,
         config = source,
         bytes = #source,
-        detail = trim(output),
-        geodata_replacements = replacements or {}
+        detail = trim(output)
     }
     if not valid then result.error = "Xray configuration test failed" end
     return result
@@ -228,8 +221,7 @@ local function apply(raw)
             ok = false,
             valid = true,
             error = "failed to restart NftFlow with the applied configuration",
-            detail = trim(output),
-            geodata_replacements = checked.geodata_replacements
+            detail = trim(output)
         }
     end
 
@@ -240,8 +232,7 @@ local function apply(raw)
         config = checked.config,
         applied_config = checked.config,
         applied_path = APPLIED_CONFIG,
-        detail = trim(output),
-        geodata_replacements = checked.geodata_replacements
+        detail = trim(output)
     }
 end
 
