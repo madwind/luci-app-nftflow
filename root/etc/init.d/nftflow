@@ -13,6 +13,7 @@ NAME=nftflow
 CTL=/usr/libexec/nftflow/nftflowctl
 GEO_AUTO=/usr/libexec/nftflow/geo-auto.sh
 RUNTIME_CONFIG=/var/run/nftflow/config.applied.json
+GROUP_STATE=/etc/nftflow/groups.created
 
 load_main() {
     config_load nftflow
@@ -35,6 +36,45 @@ geodata_schedule() {
 
 remove_geodata_schedule() {
     "$GEO_AUTO" remove >/dev/null 2>&1
+}
+
+record_created_group() {
+    mkdir -p "${GROUP_STATE%/*}" 2>/dev/null || return 1
+    touch "$GROUP_STATE" 2>/dev/null || return 1
+    chmod 0600 "$GROUP_STATE" 2>/dev/null || true
+    grep -qxF "$run_group:$run_gid" "$GROUP_STATE" 2>/dev/null ||
+        printf '%s:%s\n' "$run_group" "$run_gid" >> "$GROUP_STATE"
+}
+
+remove_created_groups() {
+    [ -f "$GROUP_STATE" ] || return 0
+
+    while IFS=: read -r group gid; do
+        case "$gid" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        case "$group" in
+            ''|*[!A-Za-z0-9_-]*) continue ;;
+        esac
+
+        grep -q "^${group}:[^:]*:${gid}:" /etc/group 2>/dev/null || continue
+        awk -F: -v gid="$gid" '$4 == gid { found = 1 } END { exit found ? 0 : 1 }' /etc/passwd 2>/dev/null && {
+            logger -t nftflow "keeping group $group because GID $gid is used by a passwd entry"
+            continue
+        }
+
+        if command -v delgroup >/dev/null 2>&1; then
+            delgroup "$group" >/dev/null 2>&1 || true
+        fi
+        if grep -q "^${group}:[^:]*:${gid}:" /etc/group 2>/dev/null; then
+            tmp="/etc/group.nftflow.$$"
+            awk -F: -v group="$group" -v gid="$gid" '!( $1 == group && $3 == gid )' /etc/group > "$tmp" 2>/dev/null &&
+                cat "$tmp" > /etc/group
+            rm -f "$tmp"
+        fi
+    done < "$GROUP_STATE"
+
+    rm -f "$GROUP_STATE"
 }
 
 ensure_group() {
@@ -81,6 +121,7 @@ ensure_group() {
                     return 1
                 }
             fi
+            record_created_group || logger -t nftflow "cannot record created group $run_group"
         fi
     fi
 
@@ -194,4 +235,5 @@ uninstall() {
         logger -t nftflow "cannot remove weekly GeoData update schedule"
 
     "$CTL" cleanup >/dev/null 2>&1 || true
+    remove_created_groups
 }
