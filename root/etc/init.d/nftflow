@@ -6,14 +6,12 @@ STOP=15
 EXTRA_COMMANDS="install geodata_schedule uninstall"
 EXTRA_HELP="
     install             Prepare runtime files
-    geodata_schedule    Install the weekly GeoData update schedule
+    geodata_schedule    Synchronize the weekly GeoData update schedule
     uninstall           Stop NftFlow and remove runtime integration"
 
 NAME=nftflow
 CTL=/usr/libexec/nftflow/nftflowctl
-GEO_UPDATE=/usr/libexec/nftflow/geo-update.lua
-GEO_CRON_TAG=nftflow-geodata-weekly
-GEO_CRON_LEGACY_TAG=nftflow-geodata-monthly
+GEO_AUTO=/usr/libexec/nftflow/geo-auto.sh
 RUNTIME_CONFIG=/var/run/nftflow/config.applied.json
 
 load_main() {
@@ -28,16 +26,7 @@ load_main() {
 }
 
 install_geodata_schedule() {
-    local crontab=/etc/crontabs/root
-    local schedule="17 4 * * 0 /usr/bin/lua $GEO_UPDATE auto-update >>/var/log/nftflow/geo-update.log 2>&1 # $GEO_CRON_TAG"
-    mkdir -p /etc/crontabs /var/log/nftflow || return 1
-    touch "$crontab" || return 1
-    sed -i "/$GEO_CRON_TAG/d" "$crontab" || return 1
-    sed -i "/$GEO_CRON_LEGACY_TAG/d" "$crontab" || return 1
-    printf '%s\n' "$schedule" >> "$crontab" || return 1
-    if pidof crond >/dev/null 2>&1; then
-        /etc/init.d/cron reload >/dev/null 2>&1 || /etc/init.d/cron restart >/dev/null 2>&1 || true
-    fi
+    "$GEO_AUTO" sync >/dev/null 2>&1
 }
 
 geodata_schedule() {
@@ -45,13 +34,7 @@ geodata_schedule() {
 }
 
 remove_geodata_schedule() {
-    local crontab=/etc/crontabs/root
-    [ -f "$crontab" ] || return 0
-    sed -i "/$GEO_CRON_TAG/d" "$crontab" || return 1
-    sed -i "/$GEO_CRON_LEGACY_TAG/d" "$crontab" || return 1
-    if pidof crond >/dev/null 2>&1; then
-        /etc/init.d/cron reload >/dev/null 2>&1 || /etc/init.d/cron restart >/dev/null 2>&1 || true
-    fi
+    "$GEO_AUTO" remove >/dev/null 2>&1
 }
 
 ensure_group() {
