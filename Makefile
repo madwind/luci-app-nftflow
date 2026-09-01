@@ -42,6 +42,8 @@ endef
 define Package/luci-app-nftflow/postinst
 #!/bin/sh
 postinst_root="$${IPKG_INSTROOT}"
+geoip_seed="$${postinst_root}/usr/share/nftflow/geoip-private.dat"
+geoip_target="$${postinst_root}/usr/share/xray/geoip.dat"
 
 chmod 0755 "$${postinst_root}/etc/init.d/nftflow" "$${postinst_root}/usr/libexec/nftflow/nftflowctl" 2>/dev/null || true
 rm -f "$${postinst_root}/usr/share/nftables.d/table-pre/30-nftflow.nft"
@@ -54,6 +56,12 @@ chmod 0644 \
 [ -f "$${postinst_root}/etc/nftflow/config.json" ] && chmod 0600 "$${postinst_root}/etc/nftflow/config.json" 2>/dev/null || true
 [ -f "$${postinst_root}/etc/nftflow/firewall.nft" ] && chmod 0600 "$${postinst_root}/etc/nftflow/firewall.nft" 2>/dev/null || true
 [ -f "$${postinst_root}/etc/nftflow/routing.conf" ] && chmod 0600 "$${postinst_root}/etc/nftflow/routing.conf" 2>/dev/null || true
+
+if [ ! -s "$${geoip_target}" ] && [ -s "$${geoip_seed}" ]; then
+	mkdir -p "$${postinst_root}/usr/share/xray" || exit 1
+	cp "$${geoip_seed}" "$${geoip_target}" || exit 1
+	chmod 0644 "$${geoip_target}" 2>/dev/null || true
+fi
 
 [ -n "$${IPKG_INSTROOT}" ] || {
 	rm -f /tmp/luci-indexcache /tmp/luci-indexcache.* /tmp/luci-modulecache /tmp/luci-modulecache.*
