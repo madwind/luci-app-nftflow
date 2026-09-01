@@ -2,7 +2,6 @@
 -- Persist installed GeoData release versions beside the configured assets.
 
 local M = {}
-local LEGACY_BASE = "/etc/nftflow"
 local DEFAULT_ASSET_DIR = "/usr/share/xray"
 
 local function trim(value)
@@ -42,11 +41,6 @@ end
 local function path_for(kind)
     local asset = asset_path(kind)
     return asset and (asset .. ".version") or nil
-end
-
-local function legacy_path_for(kind)
-    if not valid_kind(kind) then return nil end
-    return LEGACY_BASE .. "/" .. kind .. ".version"
 end
 
 local function dirname(path)
@@ -100,31 +94,13 @@ local function write_value(path, version)
 end
 
 function M.read(kind)
-    local path = path_for(kind)
-    if not path then return nil end
-
-    local value = read_value(path)
-    if value then return value end
-
-    local legacy = legacy_path_for(kind)
-    value = read_value(legacy)
-    if not value then return nil end
-
-    local migrated = write_value(path, value)
-    if migrated then os.remove(legacy) end
-    return value
+    return read_value(path_for(kind))
 end
 
 function M.write(kind, version)
     local path = path_for(kind)
     if not path then return nil, "unsupported GeoData kind" end
-
-    local saved, save_error = write_value(path, version)
-    if not saved then return nil, save_error end
-
-    local legacy = legacy_path_for(kind)
-    if legacy and legacy ~= path then os.remove(legacy) end
-    return true
+    return write_value(path, version)
 end
 
 return M
