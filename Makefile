@@ -32,12 +32,6 @@ LUCI_PKGARCH:=all
 PKG_LICENSE:=Apache-2.0
 LUCI_MAINTAINER:=NftFlow contributors
 
-define Build/Prepare/luci-app-nftflow
-	cp $(PKG_BUILD_DIR)/root/usr/share/nftflow/geoip-private.dat \
-		$(PKG_BUILD_DIR)/root/usr/share/nftflow/geoip-bootstrap.dat
-	rm -f $(PKG_BUILD_DIR)/root/usr/share/nftflow/geoip-private.dat
-endef
-
 define Package/luci-app-nftflow/conffiles
 /etc/config/nftflow
 /etc/nftflow/config.json
@@ -48,8 +42,6 @@ endef
 define Package/luci-app-nftflow/postinst
 #!/bin/sh
 postinst_root="$${IPKG_INSTROOT}"
-geoip_seed="$${postinst_root}/usr/share/nftflow/geoip-bootstrap.dat"
-geoip_target="$${postinst_root}/usr/share/xray/geoip.dat"
 
 chmod 0755 "$${postinst_root}/etc/init.d/nftflow" "$${postinst_root}/usr/libexec/nftflow/nftflowctl" 2>/dev/null || true
 rm -f "$${postinst_root}/usr/share/nftables.d/table-pre/30-nftflow.nft"
@@ -62,15 +54,6 @@ chmod 0644 \
 [ -f "$${postinst_root}/etc/nftflow/config.json" ] && chmod 0600 "$${postinst_root}/etc/nftflow/config.json" 2>/dev/null || true
 [ -f "$${postinst_root}/etc/nftflow/firewall.nft" ] && chmod 0600 "$${postinst_root}/etc/nftflow/firewall.nft" 2>/dev/null || true
 [ -f "$${postinst_root}/etc/nftflow/routing.conf" ] && chmod 0600 "$${postinst_root}/etc/nftflow/routing.conf" 2>/dev/null || true
-
-# Keep only the critical geoip:private bootstrap data. Other missing GeoData
-# references are downgraded in a temporary runtime Xray configuration so a
-# restored user config can still start and the original file remains editable.
-if [ ! -s "$${geoip_target}" ] && [ -f "$${geoip_seed}" ]; then
-	mkdir -p "$${postinst_root}/usr/share/xray" || exit 1
-	cp "$${geoip_seed}" "$${geoip_target}" || exit 1
-	chmod 0644 "$${geoip_target}" 2>/dev/null || true
-fi
 
 [ -n "$${IPKG_INSTROOT}" ] || {
 	rm -f /tmp/luci-indexcache /tmp/luci-indexcache.* /tmp/luci-modulecache /tmp/luci-modulecache.*
