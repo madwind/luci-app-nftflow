@@ -4,9 +4,7 @@
 LUA_CTL=/usr/libexec/nftflow/nftflowctl.lua
 CONFIG_CTL=/usr/libexec/nftflow/config.lua
 FIREWALL_CTL=/usr/libexec/nftflow/firewall.lua
-GEODATA_FALLBACK=/usr/libexec/nftflow/geodata-fallback.lua
 STATUS_BIN=/usr/libexec/nftflow/status-bin
-RUNTIME_CONFIG=/var/run/nftflow/config.runtime.json
 
 if [ "$1" = "run-guarded" ]; then
     shift
@@ -52,7 +50,6 @@ if [ "$1" = "run-guarded" ]; then
             /usr/bin/lua "$LUA_CTL" route del >/dev/null 2>&1 || true
         fi
         terminate_child
-        rm -f "$RUNTIME_CONFIG"
         if [ "$stop_requested" = "1" ]; then
             set_state stopped
         else
@@ -71,16 +68,10 @@ if [ "$1" = "run-guarded" ]; then
     trap stop_child TERM INT
 
     mkdir -p /var/run/nftflow || exit 1
-    if ! fallback_output="$(/usr/bin/lua "$GEODATA_FALLBACK" prepare "$config_file" "$asset_dir" "$RUNTIME_CONFIG" 2>&1)"; then
-        failure_message="GeoData fallback preparation failed: ${fallback_output:-unknown error}"
-        logger -t nftflowctl "$failure_message"
-        set_state failed "" "$failure_message"
-        exit 1
-    fi
 
     # Keep stdout/stderr attached to the procd-managed wrapper. procd forwards
     # both streams to logd, where they are tagged with the nftflowctl identity.
-    XRAY_LOCATION_ASSET="$asset_dir" "$xray_bin" run -c "$RUNTIME_CONFIG" &
+    XRAY_LOCATION_ASSET="$asset_dir" "$xray_bin" run -c "$config_file" &
     child_pid=$!
     set_state starting "$child_pid" "Xray process is starting"
     if ! kill -0 "$child_pid" >/dev/null 2>&1; then
@@ -123,7 +114,6 @@ case "$1" in
         output="$(/usr/bin/lua "$LUA_CTL" "$@" 2>&1)"
         status=$?
         rm -f /var/run/nftflow/config.applied.json
-        rm -f "$RUNTIME_CONFIG"
         rm -f /var/run/nftflow/firewall.applied.compiled.nft
         printf '%s\n' "$output"
         exit "$status"
