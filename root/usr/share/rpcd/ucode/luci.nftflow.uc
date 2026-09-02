@@ -15,6 +15,17 @@ const GEO_CRON_TAG = 'nftflow-geodata-weekly';
 const RPC_DIRECTORY_MODE = 448;
 const RPC_FILE_MODE = 384;
 const RPC_PAYLOAD_MAX_BYTES = 32 * 1024;
+const SAVED_CONFIG = '/etc/nftflow/config.yaml';
+const SAVED_FIREWALL = '/etc/nftflow/firewall.nft';
+const SAVED_ROUTING = '/etc/nftflow/routing.conf';
+const DEFAULT_CONFIG = '/usr/share/nftflow/defaults/config.yaml';
+const DEFAULT_FIREWALL = '/usr/share/nftflow/defaults/firewall.nft';
+const DEFAULT_ROUTING = '/usr/share/nftflow/defaults/routing.conf';
+const APPLIED_CONFIG = RUNTIME + '/config.applied.yaml';
+const APPLIED_FIREWALL = RUNTIME + '/firewall.applied.nft';
+const CANDIDATE_FIREWALL = RUNTIME + '/firewall.candidate.nft';
+const APPLIED_ROUTING = RUNTIME + '/routing.applied.conf';
+const CANDIDATE_ROUTING = RUNTIME + '/routing.candidate.conf';
 
 function parse_result(output) {
     let lines = split(trim(output || ''), /\r?\n/);
@@ -42,6 +53,23 @@ function run_command(command) {
     return result;
 }
 
+function capture_command(command) {
+    let fd = popen(`${command} 2>&1`, 'r');
+    if (!fd) return { ok: false, output: '', error: 'unable to execute command' };
+    let output = fd.read('all') || '';
+    let success = fd.close();
+    let ok = success === true || success === 0;
+    return { ok: ok, output: output, error: ok ? null : (trim(output) || 'command failed') };
+}
+
+function read_text(path) {
+    let file = open(path, 'r');
+    if (!file) return null;
+    let value = file.read('all') || '';
+    file.close();
+    return value;
+}
+
 function run_ctl(args) {
     let command = `/bin/sh ${CTL}`;
     for (let arg in args) command += ` ${shellquote(arg)}`;
@@ -62,6 +90,127 @@ function run_software_update(command, kind) {
 
 function run_stop_update(kind) {
     return run_command(`/usr/bin/lua ${STOP_UPDATE} ${shellquote(kind)}`);
+}
+
+function config_read_effective() {
+    let result = run_ctl([ 'config-read' ]);
+    if (result && result.ok === true) return result;
+    let config = read_text(DEFAULT_CONFIG);
+    if (config == null) return result;
+    return {
+        ok: true,
+        config: config,
+        path: result && result.path ? result.path : SAVED_CONFIG,
+        bytes: length(config),
+        using_default: true,
+        applied: read_text(APPLIED_CONFIG) != null,
+        applied_path: APPLIED_CONFIG
+    };
+}
+
+function firewall_read_effective() {
+    let result = run_ctl([ 'firewall-read' ]);
+    if (result && result.ok === true) return result;
+    let config = read_text(DEFAULT_FIREWALL);
+    if (config == null) return result;
+    let runtime = capture_command('nft list table inet nftflow');
+    let active = runtime.ok && trim(runtime.output || '')
+        ? runtime.output
+        : '# No managed NftFlow nftables tables were found.\n';
+    let applied = read_text(APPLIED_FIREWALL);
+    return {
+        ok: true,
+        config: config,
+        path: SAVED_FIREWALL,
+        bytes: length(config),
+        using_default: true,
+        active: active,
+        active_found: runtime.ok === true && trim(runtime.output || '') !== '',
+        table_count: runtime.ok === true ? 1 : 0,
+        active_table_count: runtime.ok === true ? 1 : 0,
+        missing_tables: [],
+        applied: applied != null,
+        applied_config: applied || '',
+        candidate_config: read_text(CANDIDATE_FIREWALL) || '',
+        applied_path: APPLIED_FIREWALL,
+        candidate_path: CANDIDATE_FIREWALL
+    };
+}
+
+function routing_runtime_text(table_id, ipv6) {
+    let output = [];
+    let rule4 = capture_command('ip -4 rule show');
+    let route4 = capture_command(`ip -4 route show table ${table_id}`);
+    output.push('# ip -4 rule show\n' + (rule4.ok ? trim(rule4.output) : '(unavailable)'));
+    output.push(`# ip -4 route show table ${table_id}\n` + (route4.ok ? trim(route4.output) : '(unavailable)'));
+    if (ipv6) {
+        let rule6 = capture_command('ip -6 rule show');
+        let route6 = capture_command(`ip -6 route show table ${table_id}`);
+        output.push('# ip -6 rule show\n' + (rule6.ok ? trim(rule6.output) : '(unavailable)'));
+        output.push(`# ip -6 route show table ${table_id}\n` + (route6.ok ? trim(route6.output) : '(unavailable)'));
+    }
+    return join('\n\n', output) + '\n';
+}
+
+function routing_read_effective() {
+    let result = run_ctl([ 'routing-read' ]);
+    if (result && result.ok === true) return result;
+    let config = read_text(DEFAULT_ROUTING);
+    if (config == null) return result;
+    let checked = run_ctl([ 'routing-validate', config ]);
+    if (!checked || checked.ok !== true) return result;
+    let status = run_ctl([ 'status' ]);
+    let table_id = checked.routing_table || 100;
+    let applied = read_text(APPLIED_ROUTING);
+    return {
+        ok: true,
+        path: SAVED_ROUTING,
+        config: checked.config || config,
+        bytes: length(checked.config || config),
+        using_default: true,
+        commands: checked.commands || [],
+        route_commands: checked.route_commands || [],
+        rule_commands: checked.rule_commands || [],
+        active: routing_runtime_text(table_id, checked.ipv6_enabled === true),
+        route_active: status && status.ok === true && status.route_active === true,
+        route_ipv4: status && status.ok === true && status.route_active === true,
+        route_ipv6: status && status.ok === true && status.route_ipv6 === true,
+        ipv6_enabled: checked.ipv6_enabled === true,
+        firewall_mark: checked.firewall_mark,
+        routing_table: table_id,
+        applied_config: applied || '',
+        applied_path: APPLIED_ROUTING,
+        candidate_path: CANDIDATE_ROUTING
+    };
+}
+
+function status_with_defaults() {
+    let result = run_ctl([ 'status' ]);
+    if (!result || result.ok !== true) return result;
+
+    if (read_text(result.config_file || SAVED_CONFIG) == null) {
+        let config = read_text(DEFAULT_CONFIG);
+        if (config != null) {
+            result.config_bytes = length(config);
+            result.config_valid = true;
+            result.config_error = null;
+            result.config_default = true;
+        }
+    }
+
+    if (read_text(SAVED_ROUTING) == null) {
+        let routing = read_text(DEFAULT_ROUTING);
+        if (routing != null) {
+            let checked = run_ctl([ 'routing-validate', routing ]);
+            if (checked && checked.ok === true) {
+                result.routing_configured = true;
+                result.routing_error = null;
+                result.policy_route_commands = checked.commands || [];
+                result.routing_default = true;
+            }
+        }
+    }
+    return result;
 }
 
 function merge_geo_cache(asset, cached) {
@@ -170,14 +319,14 @@ function valid_connectivity_target(target) {
 }
 
 const methods = {
-    status: { args: {}, call: () => run_ctl(['status']) },
+    status: { args: {}, call: () => status_with_defaults() },
     health: { args: {}, call: () => run_ctl(['health']) },
-    firewall_read: { args: {}, call: () => run_ctl(['firewall-read']) },
+    firewall_read: { args: {}, call: () => firewall_read_effective() },
     firewall_validate: { args: { config: '' }, call: request => run_ctl_file('firewall-validate-file', request && request.args ? request.args.config || '' : '') },
     firewall_save: { args: { config: '' }, call: request => run_ctl_file('firewall-save-file', request && request.args ? request.args.config || '' : '') },
     firewall_apply: { args: { config: '' }, call: request => run_ctl_file('firewall-apply-file', request && request.args ? request.args.config || '' : '') },
     route_apply: { args: {}, call: () => run_ctl(['route-apply']) },
-    routing_read: { args: {}, call: () => run_ctl(['routing-read']) },
+    routing_read: { args: {}, call: () => routing_read_effective() },
     routing_validate: { args: { config: '' }, call: request => run_ctl_file('routing-validate-file', request && request.args ? request.args.config || '' : '') },
     routing_save: { args: { config: '' }, call: request => run_ctl_file('routing-save-file', request && request.args ? request.args.config || '' : '') },
     routing_apply: { args: { config: '' }, call: request => run_ctl_file('routing-apply-file', request && request.args ? request.args.config || '' : '') },
@@ -189,7 +338,7 @@ const methods = {
             return run_ctl(['connectivity-test', target]);
         }
     },
-    config_read: { args: {}, call: () => run_ctl(['config-read']) },
+    config_read: { args: {}, call: () => config_read_effective() },
     config_validate: { args: { config: '' }, call: request => run_ctl_file('config-validate-file', request && request.args ? request.args.config || '' : '') },
     config_apply: { args: { config: '' }, call: request => run_ctl_file('config-apply-file', request && request.args ? request.args.config || '' : '') },
     config_save: { args: { config: '' }, call: request => run_ctl_file('config-save-file', request && request.args ? request.args.config || '' : '') },
