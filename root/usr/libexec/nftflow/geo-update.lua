@@ -368,22 +368,22 @@ local function worker(kind)
     if ok then
         state.source_version = source_version or state.source_version
         state.local_version = source_version or state.local_version
-        if state.local_version then
-            local persisted, persist_error = geodata_version.write(kind, state.local_version)
+        state.persist_error = nil
+        if source_version then
+            local persisted, persist_error = geodata_version.write(kind, source_version)
             if not persisted then state.persist_error = persist_error or "cannot persist installed GeoData version" end
         end
         state.last_update = state.finished
-        state.status = "running"
-        save_state(kind, state)
-        local checked = probe(kind)
-        if checked.ok == true then
-            checked.local_version = checked.local_version or state.local_version
-            if checked.remote_version and checked.local_version then
-                checked.update_available = checked.remote_version ~= checked.local_version
-            end
+        state.checked = state.finished
+        state.check_ok = true
+        state.last_check_error = nil
+        state.post_check_error = nil
+        if source_version then
+            state.latest_version = source_version
+            state.update_available = false
+        else
+            state.update_available = nil
         end
-        apply_check(state, checked)
-        if checked.ok ~= true then state.post_check_error = checked.error or "verification check failed" end
     end
     state.status = ok and "done" or "failed"
     save_state(kind, state)
