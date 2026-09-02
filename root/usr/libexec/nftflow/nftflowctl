@@ -5,6 +5,10 @@ LUA_CTL=/usr/libexec/nftflow/nftflowctl.lua
 CONFIG_CTL=/usr/libexec/nftflow/config.lua
 FIREWALL_CTL=/usr/libexec/nftflow/firewall.lua
 STATUS_BIN=/usr/libexec/nftflow/status-bin
+FIREWALL_SOURCE=/etc/nftflow/firewall.nft
+FIREWALL_DEFAULT=/usr/share/nftflow/defaults/firewall.nft
+ROUTING_SOURCE=/etc/nftflow/routing.conf
+ROUTING_DEFAULT=/usr/share/nftflow/defaults/routing.conf
 
 if [ "$1" = "run-guarded" ]; then
     shift
@@ -83,14 +87,31 @@ if [ "$1" = "run-guarded" ]; then
         exit "$child_status"
     fi
 
-    if firewall_output="$(/usr/bin/lua "$FIREWALL_CTL" firewall on 2>&1)"; then
-        :
+    if [ -r "$FIREWALL_SOURCE" ]; then
+        firewall_output="$(/usr/bin/lua "$FIREWALL_CTL" firewall on 2>&1)"
+        firewall_status=$?
+    elif [ -r "$FIREWALL_DEFAULT" ]; then
+        firewall_output="$(/usr/bin/lua "$FIREWALL_CTL" firewall-apply "$(cat "$FIREWALL_DEFAULT")" 2>&1)"
+        firewall_status=$?
     else
+        firewall_output="missing firewall source: $FIREWALL_SOURCE and $FIREWALL_DEFAULT"
+        firewall_status=1
+    fi
+    if [ "$firewall_status" -ne 0 ]; then
         logger -t nftflowctl "firewall startup apply failed: ${firewall_output:-unknown error}"
     fi
-    if routing_output="$(/usr/bin/lua "$LUA_CTL" route-apply 2>&1)"; then
-        :
+
+    if [ -r "$ROUTING_SOURCE" ]; then
+        routing_output="$(/usr/bin/lua "$LUA_CTL" route-apply 2>&1)"
+        routing_status=$?
+    elif [ -r "$ROUTING_DEFAULT" ]; then
+        routing_output="$(/usr/bin/lua "$LUA_CTL" routing-apply "$(cat "$ROUTING_DEFAULT")" 2>&1)"
+        routing_status=$?
     else
+        routing_output="missing routing source: $ROUTING_SOURCE and $ROUTING_DEFAULT"
+        routing_status=1
+    fi
+    if [ "$routing_status" -ne 0 ]; then
         logger -t nftflowctl "routing startup apply failed: ${routing_output:-unknown error}"
     fi
     set_state ready "$child_pid" 'Xray process is running'
@@ -104,8 +125,20 @@ case "$1" in
     config-read|config-validate|config-validate-file|config-save|config-save-file|config-apply|config-apply-file)
         exec /usr/bin/lua "$CONFIG_CTL" "$@"
         ;;
-    firewall|firewall-read|firewall-validate|firewall-validate-file|firewall-save|firewall-save-file|firewall-apply|firewall-apply-file)
+    firewall)
+        if [ "${2:-on}" = "on" ] && [ ! -r "$FIREWALL_SOURCE" ] && [ -r "$FIREWALL_DEFAULT" ]; then
+            exec /usr/bin/lua "$FIREWALL_CTL" firewall-apply "$(cat "$FIREWALL_DEFAULT")"
+        fi
         exec /usr/bin/lua "$FIREWALL_CTL" "$@"
+        ;;
+    firewall-read|firewall-validate|firewall-validate-file|firewall-save|firewall-save-file|firewall-apply|firewall-apply-file)
+        exec /usr/bin/lua "$FIREWALL_CTL" "$@"
+        ;;
+    route-apply)
+        if [ ! -r "$ROUTING_SOURCE" ] && [ -r "$ROUTING_DEFAULT" ]; then
+            exec /usr/bin/lua "$LUA_CTL" routing-apply "$(cat "$ROUTING_DEFAULT")"
+        fi
+        exec /usr/bin/lua "$LUA_CTL" "$@"
         ;;
     status|health)
         NFTFLOW_NFT_TERSE=1 PATH="$STATUS_BIN:$PATH" exec /usr/bin/lua "$LUA_CTL" "$@"
