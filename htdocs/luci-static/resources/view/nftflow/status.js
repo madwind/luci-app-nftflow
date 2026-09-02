@@ -3,7 +3,6 @@
 'require rpc';
 'require poll';
 'require ui';
-'require uci';
 'require nftflow.ui as nftflowUi';
 
 var callStatus = rpc.declare({
@@ -76,57 +75,9 @@ function actionText(action) {
     return _('Service action');
 }
 
-function logDateFormatter() {
-    var timezone = uci.get('system', '@system[0]', 'zonename');
-    timezone = timezone ? String(timezone).replace(/ /g, '_') : undefined;
-
-    try {
-        return new Intl.DateTimeFormat('en-US', {
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-            hour: '2-digit',
-            minute: '2-digit',
-            second: '2-digit',
-            hourCycle: 'h23',
-            timeZone: timezone
-        });
-    } catch (error) {
-        return null;
-    }
-}
-
-function formatLogTimestamp(date, formatter) {
-    if (formatter && typeof formatter.formatToParts === 'function') {
-        try {
-            var values = {};
-            formatter.formatToParts(date).forEach(function(part) {
-                if (part.type !== 'literal')
-                    values[part.type] = part.value;
-            });
-
-            if (values.year && values.month && values.day && values.hour && values.minute && values.second)
-                return '%s-%s-%s %s:%s:%s'.format(
-                    values.year, values.month, values.day,
-                    values.hour, values.minute, values.second
-                );
-        } catch (error) {
-            // Fall through to the stable UTC representation below.
-        }
-    }
-
-    return date.toISOString().slice(0, 19).replace('T', ' ');
-}
-
-function formatLogEntry(entry, formatter) {
+function formatLogEntry(entry) {
     var message = entry && entry.msg != null ? String(entry.msg) : '';
-    var date = new Date(entry && entry.time);
-    var timestamp = '';
-
-    if (!isNaN(date.getTime()))
-        timestamp = formatLogTimestamp(date, formatter);
-
-    return timestamp ? '[' + timestamp + '] ' + message : message;
+    return message.replace(/^nftflowctl(?:\[\d+\])?:\s*/, '');
 }
 
 return view.extend({
@@ -136,15 +87,13 @@ return view.extend({
 
     load: function() {
         return Promise.all([
-            L.resolveDefault(callStatus(), { ok: false, error: _('Unable to read service status.') }),
-            uci.load('system').catch(function() { return {}; })
+            L.resolveDefault(callStatus(), { ok: false, error: _('Unable to read service status.') })
         ]);
     },
 
     render: function(data) {
         document.title = _('NftFlow | Overview');
 
-        var formatter = logDateFormatter();
         var service = E('span', { 'aria-live': 'polite' });
         var uptime = E('span');
         var firewall = E('span', { 'aria-live': 'polite' });
@@ -176,7 +125,7 @@ return view.extend({
         var actionInProgress = false;
         var actionDeadline = 0;
         var lastStatus = null;
-        var paused = false;
+        var logStopped = false;
         var pageVisible = true;
         var followLogs = true;
         var logLines = [];
@@ -345,7 +294,7 @@ return view.extend({
             if (!rememberLogEntry(entry))
                 return;
 
-            logLines.push(formatLogEntry(entry, formatter));
+            logLines.push(formatLogEntry(entry));
             logLines = nftflowUi.boundedLines(logLines, LOG_LINES, LOG_MAX_BYTES);
             renderLogs();
         }
@@ -356,7 +305,7 @@ return view.extend({
             (Array.isArray(entries) ? entries : []).concat(pendingLiveEntries).forEach(function(entry) {
                 if (!isRelevantLogEntry(entry) || !rememberLogEntry(entry))
                     return;
-                merged.push(formatLogEntry(entry, formatter));
+                merged.push(formatLogEntry(entry));
             });
 
             pendingLiveEntries = [];
@@ -432,7 +381,7 @@ return view.extend({
         }
 
         function scheduleReconnect() {
-            if (paused || !pageVisible || reconnectTimer !== null)
+            if (logStopped || !pageVisible || reconnectTimer !== null)
                 return;
 
             nftflowUi.setState(logState, 'notice', _('Reconnecting'));
@@ -443,7 +392,7 @@ return view.extend({
         }
 
         function startLogStream() {
-            if (paused || !pageVisible || streamController)
+            if (logStopped || !pageVisible || streamController)
                 return Promise.resolve();
 
             if (typeof fetch !== 'function' || typeof TextDecoder !== 'function' || typeof AbortController !== 'function') {
@@ -556,21 +505,22 @@ return view.extend({
         });
         logFilter.addEventListener('input', renderLogs);
 
-        var pauseButton = E('button', {
+        var logStreamButton = E('button', {
             'class': 'btn cbi-button cbi-button-action',
             'type': 'button'
-        }, _('Pause'));
-        pauseButton.addEventListener('click', ui.createHandlerFn(pauseButton, function() {
-            paused = !paused;
-            pauseButton.textContent = paused ? _('Resume') : _('Pause');
+        }, _('Stop'));
+        logStreamButton.addEventListener('click', ui.createHandlerFn(logStreamButton, function() {
+            logStopped = !logStopped;
+            logStreamButton.textContent = logStopped ? _('Start') : _('Stop');
 
-            if (paused) {
+            if (logStopped) {
                 stopLogStream();
-                nftflowUi.setState(logState, 'notice', _('Paused'));
+                nftflowUi.setState(logState, 'notice', _('Stopped'));
                 return Promise.resolve();
             }
 
-            return startLogStream();
+            startLogStream();
+            return Promise.resolve();
         }));
 
         var initialStatus = data && data[0];
@@ -623,7 +573,7 @@ return view.extend({
                         E('label', {
                             'style': 'display: inline-flex; align-items: center; gap: .5rem;'
                         }, [ _('Filter'), logFilter ]),
-                        pauseButton
+                        logStreamButton
                     ])
                 ]),
                 logOutput
