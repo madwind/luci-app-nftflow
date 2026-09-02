@@ -88,9 +88,10 @@ function formatTimestamp(value) {
     }
 
     var amount = Math.round(delta / divisor);
+    var locale = document.documentElement && document.documentElement.getAttribute('lang') || 'en';
     try {
         if (typeof Intl !== 'undefined' && typeof Intl.RelativeTimeFormat === 'function')
-            return new Intl.RelativeTimeFormat(undefined, { numeric: 'always' }).format(amount, unit);
+            return new Intl.RelativeTimeFormat(locale, { numeric: 'always' }).format(amount, unit);
     } catch (e) {}
 
     var count = Math.abs(amount);
