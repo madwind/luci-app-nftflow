@@ -182,7 +182,7 @@ function createEditor(options) {
         withinLimit: withinLimit
     };
 
-    addInjectedAction(leftActions, _('Format'), 'cbi-button-action', options.format, null);
+    addInjectedAction(leftActions, options.formatLabel || _('Format'), 'cbi-button-action', options.format, null);
     addInjectedAction(leftActions, _('Check syntax'), 'cbi-button-action', options.check, null);
     addInjectedAction(leftActions, _('Reload saved file'), 'cbi-button-negative', options.reload,
         _('Reload the saved file? This will replace the current editor contents. Any unsaved changes will be lost.'));
