@@ -74,7 +74,7 @@ routing:
       outboundTag: proxy-out
 
 inbounds:
-  - tag: default-in
+  - tag: tunnel-in
     port: 12345
     protocol: tunnel
     settings:
