@@ -78,10 +78,10 @@ fi
 					cp "$${legacy_config}" "$${yaml_config}" || exit 1
 				fi
 				chmod 0600 "$${yaml_config}" 2>/dev/null || true
-				uci set nftflow.main.config_file='/etc/nftflow/config.yaml'
-				uci commit nftflow
 				rm -f "$${legacy_config}"
 			fi
+			uci set nftflow.main.config_file='/etc/nftflow/config.yaml'
+			uci commit nftflow
 			;;
 	esac
 
