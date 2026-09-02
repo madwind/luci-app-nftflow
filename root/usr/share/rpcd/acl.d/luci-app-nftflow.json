@@ -27,7 +27,8 @@
                 ],
                 "luci.nftflow.defaults": [
                     "firewall",
-                    "config"
+                    "config",
+                    "routing"
                 ],
                 "luci.nftflow.geoops": [
                     "status"
