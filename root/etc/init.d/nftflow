@@ -13,6 +13,7 @@ NAME=nftflow
 CTL=/usr/libexec/nftflow/nftflowctl
 GEO_AUTO=/usr/libexec/nftflow/geo-auto.sh
 RUNTIME_CONFIG=/var/run/nftflow/config.applied.yaml
+DEFAULT_CONFIG=/usr/share/nftflow/defaults/config.yaml
 GROUP_STATE=/etc/nftflow/groups.created
 
 load_main() {
@@ -163,8 +164,14 @@ start_service() {
             return 1
         }
         config_file="$RUNTIME_CONFIG"
+    elif [ ! -r "$config_file" ]; then
+        config_file="$DEFAULT_CONFIG"
     fi
 
+    [ -r "$config_file" ] || {
+        logger -t nftflow "Xray configuration is missing: $config_file"
+        return 1
+    }
     command -v "$xray_bin" >/dev/null 2>&1 || {
         logger -t nftflow "Xray binary not found: $xray_bin"
         return 1
@@ -172,8 +179,8 @@ start_service() {
     ensure_group || return 1
     procd_open_instance
     # A LuCI Apply may pass the runtime snapshot as config_file for this
-    # lifecycle only. Normal start/restart has no override and returns to the
-    # persistent UCI-configured file.
+    # lifecycle only. Normal start/restart has no override and uses the saved
+    # file when present, otherwise the packaged default template.
     procd_set_param command "$CTL" run-guarded "$xray_bin" "$config_file" "$asset_dir"
     procd_set_param user root
     procd_set_param group "$run_group"
@@ -224,7 +231,7 @@ service_triggers() {
 
 install() {
     "$CTL" prepare
-    logger -t nftflow "firewall source is /etc/nftflow/firewall.nft; routing source is /etc/nftflow/routing.conf"
+    logger -t nftflow "saved sources use /etc/nftflow; missing files fall back to /usr/share/nftflow/defaults"
 }
 
 uninstall() {
