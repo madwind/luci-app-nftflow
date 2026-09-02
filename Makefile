@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# luci-app-nftflow - dependency-free hand-written Xray JSON editor for OpenWrt.
+# luci-app-nftflow - hand-written Xray YAML editor for OpenWrt.
 
 NFTFLOW_SOURCE_DIR:=$(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
@@ -34,7 +34,7 @@ LUCI_MAINTAINER:=NftFlow contributors
 
 define Package/luci-app-nftflow/conffiles
 /etc/config/nftflow
-/etc/nftflow/config.json
+/etc/nftflow/config.yaml
 /etc/nftflow/firewall.nft
 /etc/nftflow/routing.conf
 endef
@@ -53,7 +53,7 @@ chmod 0644 \
 	"$${postinst_root}/usr/share/luci/menu.d/luci-app-nftflow.json" \
 	"$${postinst_root}/etc/config/nftflow" \
 	"$${postinst_root}/www/luci-static/resources/view/nftflow/"*.js 2>/dev/null || true
-[ -f "$${postinst_root}/etc/nftflow/config.json" ] && chmod 0600 "$${postinst_root}/etc/nftflow/config.json" 2>/dev/null || true
+[ -f "$${postinst_root}/etc/nftflow/config.yaml" ] && chmod 0600 "$${postinst_root}/etc/nftflow/config.yaml" 2>/dev/null || true
 [ -f "$${postinst_root}/etc/nftflow/firewall.nft" ] && chmod 0600 "$${postinst_root}/etc/nftflow/firewall.nft" 2>/dev/null || true
 [ -f "$${postinst_root}/etc/nftflow/routing.conf" ] && chmod 0600 "$${postinst_root}/etc/nftflow/routing.conf" 2>/dev/null || true
 
@@ -64,6 +64,27 @@ if [ ! -s "$${geoip_target}" ] && [ -s "$${geoip_seed}" ]; then
 fi
 
 [ -n "$${IPKG_INSTROOT}" ] || {
+	legacy_config=/etc/nftflow/config.json
+	yaml_config=/etc/nftflow/config.yaml
+	current_config="$$(uci -q get nftflow.main.config_file 2>/dev/null)"
+	case "$${current_config}" in
+		''|/etc/nftflow/config.json|/etc/nftflow/config.yaml)
+			if [ -f "$${legacy_config}" ]; then
+				migration_tmp="/tmp/nftflow-config-migrate.$$$$"
+				if [ -x /usr/bin/xray ] && /usr/bin/xray run -dump -format json -config "$${legacy_config}" > "$${migration_tmp}" 2>/dev/null && [ -s "$${migration_tmp}" ]; then
+					mv "$${migration_tmp}" "$${yaml_config}" || exit 1
+				else
+					rm -f "$${migration_tmp}"
+					cp "$${legacy_config}" "$${yaml_config}" || exit 1
+				fi
+				chmod 0600 "$${yaml_config}" 2>/dev/null || true
+				uci set nftflow.main.config_file='/etc/nftflow/config.yaml'
+				uci commit nftflow
+				rm -f "$${legacy_config}"
+			fi
+			;;
+	esac
+
 	rm -f /tmp/luci-indexcache /tmp/luci-indexcache.* /tmp/luci-modulecache /tmp/luci-modulecache.*
 	rm -rf /tmp/luci-modulecache/
 	/etc/init.d/rpcd reload 2>/dev/null

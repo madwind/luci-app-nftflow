@@ -12,14 +12,14 @@ EXTRA_HELP="
 NAME=nftflow
 CTL=/usr/libexec/nftflow/nftflowctl
 GEO_AUTO=/usr/libexec/nftflow/geo-auto.sh
-RUNTIME_CONFIG=/var/run/nftflow/config.applied.json
+RUNTIME_CONFIG=/var/run/nftflow/config.applied.yaml
 GROUP_STATE=/etc/nftflow/groups.created
 
 load_main() {
     config_load nftflow
     config_get enabled main enabled 0
     config_get xray_bin main xray_bin /usr/bin/xray
-    config_get config_file main config_file /etc/nftflow/config.json
+    config_get config_file main config_file /etc/nftflow/config.yaml
     config_get asset_dir main asset_dir /usr/share/xray
     config_get run_gid main run_gid 23333
     config_get run_group main run_group nftflow

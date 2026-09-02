@@ -71,7 +71,7 @@ if [ "$1" = "run-guarded" ]; then
 
     # Keep stdout/stderr attached to the procd-managed wrapper. procd forwards
     # both streams to logd, where they are tagged with the nftflowctl identity.
-    XRAY_LOCATION_ASSET="$asset_dir" "$xray_bin" run -c "$config_file" &
+    XRAY_LOCATION_ASSET="$asset_dir" "$xray_bin" run -format yaml -c "$config_file" &
     child_pid=$!
     set_state starting "$child_pid" "Xray process is starting"
     if ! kill -0 "$child_pid" >/dev/null 2>&1; then
@@ -113,7 +113,7 @@ case "$1" in
     cleanup)
         output="$(/usr/bin/lua "$LUA_CTL" "$@" 2>&1)"
         status=$?
-        rm -f /var/run/nftflow/config.applied.json
+        rm -f /var/run/nftflow/config.applied.yaml
         rm -f /var/run/nftflow/firewall.applied.compiled.nft
         printf '%s\n' "$output"
         exit "$status"

@@ -1,24 +1,19 @@
 #!/usr/bin/lua
 -- SPDX-License-Identifier: Apache-2.0
--- Xray JSON frontend with validation, temporary runtime apply and persistent save.
+-- Xray YAML frontend with validation, temporary runtime apply and persistent save.
 
 local jsonc = require "luci.jsonc"
 local nixio = require "nixio"
 local nixio_fs = require "nixio.fs"
 
 local RUNTIME = "/var/run/nftflow"
-local APPLIED_CONFIG = RUNTIME .. "/config.applied.json"
+local APPLIED_CONFIG = RUNTIME .. "/config.applied.yaml"
 local EDITOR_MAX_BYTES = 32 * 1024
 local temporary_sequence = 0
 
 local function json_encode(value)
     if jsonc.stringify then return jsonc.stringify(value) end
     return jsonc.encode(value)
-end
-
-local function json_decode(value)
-    if jsonc.parse then return jsonc.parse(value) end
-    return jsonc.decode(value)
 end
 
 local function trim(value)
@@ -108,7 +103,7 @@ end
 local function main_config()
     return {
         xray_bin = uci_get("xray_bin", "/usr/bin/xray"),
-        config_file = uci_get("config_file", "/etc/nftflow/config.json"),
+        config_file = uci_get("config_file", "/etc/nftflow/config.yaml"),
         asset_dir = uci_get("asset_dir", "/usr/share/xray")
     }
 end
@@ -119,28 +114,20 @@ local function normalize(raw)
     return raw
 end
 
-local function parse_document(raw, path)
+local function prepare_source(raw, path)
     if raw == nil then return nil, "cannot read " .. tostring(path) end
-    if #raw > EDITOR_MAX_BYTES then return nil, "configuration is larger than 32 KiB" end
-    if raw:find("%z") then return nil, "configuration contains a NUL byte" end
-    local ok, value = pcall(json_decode, raw)
-    if not ok or type(value) ~= "table" then return nil, "invalid JSON in " .. tostring(path) end
-    local has_number = false
-    for key in pairs(value) do
-        if type(key) ~= "string" then has_number = true; break end
-    end
-    if has_number or trim(raw):sub(1, 1) ~= "{" then
-        return nil, "JSON document root must be an object"
-    end
-    return value
+    local source = normalize(raw)
+    if #source > EDITOR_MAX_BYTES then return nil, "configuration is larger than 32 KiB" end
+    if source:find("%z") then return nil, "configuration contains a NUL byte" end
+    if trim(source) == "" then return nil, "YAML configuration is empty" end
+    return source
 end
 
 local function validate(raw)
     local main = main_config()
-    local source = normalize(raw)
-    local _, parse_error = parse_document(source, main.config_file)
-    if parse_error then
-        return { ok = false, valid = false, error = parse_error }
+    local source, source_error = prepare_source(raw, main.config_file)
+    if not source then
+        return { ok = false, valid = false, error = source_error }
     end
     if not exec_quiet("[ -x " .. shellquote(main.xray_bin) .. " ]") then
         return { ok = false, valid = false, error = "Xray binary is unavailable: " .. main.xray_bin }
@@ -149,12 +136,12 @@ local function validate(raw)
         return { ok = false, valid = false, error = "cannot create " .. RUNTIME }
     end
 
-    local check_path = temporary_path(RUNTIME .. "/config-check.json")
+    local check_path = temporary_path(RUNTIME .. "/config-check.yaml")
     local saved, save_error = write_atomic(check_path, source, 600)
     if not saved then return { ok = false, valid = false, error = save_error } end
 
     local command = "XRAY_LOCATION_ASSET=" .. shellquote(main.asset_dir) .. " " ..
-        shellquote(main.xray_bin) .. " run -test -format json -config " .. shellquote(check_path)
+        shellquote(main.xray_bin) .. " run -test -format yaml -config " .. shellquote(check_path)
     local valid, output = exec_capture(command)
     os.remove(check_path)
 
@@ -165,24 +152,22 @@ local function validate(raw)
         bytes = #source,
         detail = trim(output)
     }
-    if not valid then result.error = "Xray configuration test failed" end
+    if not valid then result.error = "Xray YAML configuration test failed" end
     return result
 end
 
 local function read()
     local main = main_config()
     local source = read_file(main.config_file)
-    if source == nil then
-        return { ok = false, error = "cannot read " .. main.config_file, path = main.config_file }
+    local prepared, source_error = prepare_source(source, main.config_file)
+    if not prepared then
+        return { ok = false, error = source_error, path = main.config_file }
     end
-    local _, parse_error = parse_document(source, main.config_file)
     return {
         ok = true,
-        config = source,
+        config = prepared,
         path = main.config_file,
-        bytes = #source,
-        syntax = parse_error == nil,
-        error = parse_error,
+        bytes = #prepared,
         applied = read_file(APPLIED_CONFIG) ~= nil,
         applied_path = APPLIED_CONFIG
     }
@@ -190,17 +175,17 @@ end
 
 local function save(raw)
     local main = main_config()
-    local source = normalize(raw)
-    local _, parse_error = parse_document(source, main.config_file)
-    if parse_error then return { ok = false, valid = false, error = parse_error } end
-    local saved, save_error = write_atomic(main.config_file, source, 600)
-    if not saved then return { ok = false, error = save_error } end
+    local checked = validate(raw)
+    if not checked.valid then return checked end
+    local saved, save_error = write_atomic(main.config_file, checked.config, 600)
+    if not saved then return { ok = false, valid = true, error = save_error } end
     return {
         ok = true,
         valid = true,
-        config = source,
+        config = checked.config,
         path = main.config_file,
-        bytes = #source
+        bytes = checked.bytes,
+        detail = checked.detail
     }
 end
 
@@ -220,7 +205,7 @@ local function apply(raw)
         return {
             ok = false,
             valid = true,
-            error = "failed to restart NftFlow with the applied configuration",
+            error = "failed to restart NftFlow with the applied YAML configuration",
             detail = trim(output)
         }
     end

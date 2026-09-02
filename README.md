@@ -5,7 +5,7 @@
 ## Features
 
 - View service status and start, stop, or restart services
-- Edit, format, and validate JSON configuration
+- Edit and validate Xray YAML configuration
 - Edit and apply nftables firewall rules
 - Configure and apply policy routing
 - Download, update, and manage GeoIP data

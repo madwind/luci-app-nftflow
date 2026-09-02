@@ -2,7 +2,7 @@ config nftflow 'main'
     option enabled '0'
     option mode 'tproxy'
     option xray_bin '/usr/bin/xray'
-    option config_file '/etc/nftflow/config.json'
+    option config_file '/etc/nftflow/config.yaml'
     option asset_dir '/usr/share/xray'
     option geoip_file '/usr/share/xray/geoip.dat'
     option geosite_file '/usr/share/xray/geosite.dat'
@@ -11,8 +11,8 @@ config nftflow 'main'
     option geoip_auto_update '0'
     option geosite_auto_update '0'
 
-    # The JSON editor owns Xray's complete core configuration. These options
-    # only describe the OpenWrt process and runtime outside that JSON file.
+    # The YAML editor owns Xray's complete core configuration. These options
+    # only describe the OpenWrt process and runtime outside that YAML file.
     # run_gid is the primary group identity used by the Xray process.
     # Firewall and policy-route commands are edited in their own files.
     option run_gid '23333'
