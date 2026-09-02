@@ -18,19 +18,10 @@ function createEditor(options) {
     var minHeight = options.minHeight || '24em';
     var rows = options.rows || 24;
     var savedValue = String(options.value === undefined || options.value === null ? '' : options.value);
-    var lineNumbers = E('textarea', {
-        'class': 'cbi-input-text',
-        'style': 'display: block; flex: 0 0 auto; width: 4em; min-height: ' + minHeight + '; box-sizing: border-box; overflow: hidden; resize: none; text-align: right; user-select: none;',
-        'rows': rows,
-        'wrap': 'off',
-        'readonly': true,
-        'tabindex': '-1',
-        'aria-hidden': 'true'
-    });
     var textarea = E('textarea', {
         'id': id,
         'class': 'cbi-input-text',
-        'style': 'display: block; flex: 1 1 auto; width: 0; min-width: 0; min-height: ' + minHeight + '; box-sizing: border-box;',
+        'style': 'display: block; width: 100%; min-height: ' + minHeight + '; box-sizing: border-box;',
         'rows': rows,
         'wrap': 'off',
         'spellcheck': 'false',
@@ -39,12 +30,10 @@ function createEditor(options) {
         'readonly': options.readonly ? true : null,
         'aria-label': label
     });
-    var editorPane = E('div', {
-        'style': 'display: flex; align-items: stretch; gap: .25rem; width: 100%;'
-    }, [ lineNumbers, textarea ]);
     var byteCount = E('span', {}, nftflowUi.formatBytes(editorByteLength(savedValue)));
     var byteLimit = E('span', { 'aria-live': 'polite' });
     var state = E('span', { 'aria-live': 'polite' }, options.readonly ? _('Read-only') : _('Saved file'));
+    var cursorPosition = E('span', { 'aria-live': 'polite' }, _('Ln 1, Col 1'));
     var leftActions = E('div', { 'style': 'display: flex; flex-wrap: wrap; gap: .5rem;' });
     var rightActions = E('div', { 'style': 'display: flex; flex-wrap: wrap; gap: .5rem; margin-left: auto;' });
     var toolbar = E('div', {
@@ -63,9 +52,10 @@ function createEditor(options) {
     });
     var rootChildren = [
         E('label', { 'class': 'cbi-section-descr', 'for': id }, label),
-        editorPane,
+        textarea,
         E('div', { 'class': 'cbi-section-descr' }, [
-            _('Size'), ': ', byteCount, ' / ', nftflowUi.formatBytes(maxBytes), ' · ', state, ' ', byteLimit
+            _('Size'), ': ', byteCount, ' / ', nftflowUi.formatBytes(maxBytes), ' · ', state,
+            ' · ', cursorPosition, ' ', byteLimit
         ])
     ];
     var api;
@@ -76,28 +66,26 @@ function createEditor(options) {
     var root = E('div', { 'class': 'nftflow-editor' }, rootChildren);
     textarea.value = savedValue;
 
-    function updateLineNumbers() {
-        var count = textarea.value === '' ? 1 : textarea.value.split('\n').length;
-        var values = [];
-
-        for (var index = 1; index <= count; index++)
-            values.push(index);
-
-        lineNumbers.value = values.join('\n');
-        lineNumbers.style.width = Math.max(4, String(count).length + 2) + 'ch';
-        lineNumbers.scrollTop = textarea.scrollTop;
-    }
-
     function isDirty() {
         return textarea.value !== savedValue;
+    }
+
+    function updateCursorPosition() {
+        var position = typeof textarea.selectionStart === 'number' ? textarea.selectionStart : 0;
+        var before = textarea.value.slice(0, Math.max(0, position));
+        var lastBreak = before.lastIndexOf('\n');
+        var line = before.split('\n').length;
+        var column = position - lastBreak;
+
+        nftflowUi.setText(cursorPosition, _('Ln %d, Col %d').format(line, column));
     }
 
     function updateState() {
         var bytes = editorByteLength(textarea.value);
 
-        updateLineNumbers();
         nftflowUi.setText(byteCount, nftflowUi.formatBytes(bytes));
         nftflowUi.setText(state, options.readonly ? _('Read-only') : isDirty() ? _('Unsaved edits') : _('Saved file'));
+        updateCursorPosition();
 
         if (bytes > maxBytes) {
             nftflowUi.setState(byteLimit, 'error', _('%s maximum; current size is %s.').format(
@@ -112,10 +100,6 @@ function createEditor(options) {
         updateState();
         if (options.onInput)
             options.onInput(api);
-    }
-
-    function handleScroll() {
-        lineNumbers.scrollTop = textarea.scrollTop;
     }
 
     function confirmAction(title, message, handler) {
@@ -208,12 +192,16 @@ function createEditor(options) {
     addInjectedAction(rightActions, _('Apply & Save'), 'cbi-button-save', options.applySave, null);
 
     textarea.addEventListener('input', handleInput);
-    textarea.addEventListener('scroll', handleScroll);
+    textarea.addEventListener('keyup', updateCursorPosition);
+    textarea.addEventListener('click', updateCursorPosition);
+    textarea.addEventListener('select', updateCursorPosition);
     updateState();
 
     api.destroy = function() {
         textarea.removeEventListener('input', handleInput);
-        textarea.removeEventListener('scroll', handleScroll);
+        textarea.removeEventListener('keyup', updateCursorPosition);
+        textarea.removeEventListener('click', updateCursorPosition);
+        textarea.removeEventListener('select', updateCursorPosition);
     };
 
     return api;
