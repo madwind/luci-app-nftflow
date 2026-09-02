@@ -3,6 +3,7 @@
 'require rpc';
 'require nftflow.ui as nftflowUi';
 'require nftflow.editor as nftflowEditor';
+'require nftflow.yamlformat as nftflowYamlFormat';
 
 var callConfigRead = rpc.declare({
     object: 'luci.nftflow',
@@ -62,6 +63,13 @@ return view.extend({
             current.focus();
             setMessage('error', _('The Xray YAML file is larger than 32 KiB.'));
             return false;
+        }
+
+        function formatConfig(current) {
+            current.setValue(nftflowYamlFormat.format(current.getValue()));
+            current.focus();
+            setMessage('ok', _('YAML formatted in the editor. Review before applying.'));
+            return Promise.resolve(true);
         }
 
         function checkConfig(current) {
@@ -143,6 +151,8 @@ return view.extend({
             label: _('Xray YAML configuration'),
             minHeight: '30em',
             rows: 30,
+            format: formatConfig,
+            formatLabel: _('Format YAML'),
             check: checkConfig,
             reload: reloadConfig,
             apply: applyConfig,
