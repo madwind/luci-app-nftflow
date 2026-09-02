@@ -36,6 +36,13 @@ var callConfigSave = rpc.declare({
     reject: true
 });
 
+var callConfigDefault = rpc.declare({
+    object: 'luci.nftflow.defaults',
+    method: 'config',
+    expect: { '': {} },
+    reject: true
+});
+
 function resultDetail(result, fallback) {
     var detail = [ result && result.error, result && result.detail ].filter(Boolean).join(': ');
     return detail || fallback;
@@ -102,6 +109,21 @@ return view.extend({
             });
         }
 
+        function loadDefaultConfig(current) {
+            setMessage('notice', _('Loading default Xray YAML template...'));
+            return callConfigDefault().then(function(next) {
+                return nftflowUi.requireOk(next, _('Unable to read the default Xray YAML template.'));
+            }).then(function(next) {
+                current.setValue(next.config || '');
+                current.focus();
+                setMessage('notice', _('Default Xray YAML template loaded in the editor. Review before applying.'));
+                return true;
+            }).catch(function(error) {
+                setMessage('error', nftflowUi.errorMessage(error, _('Unable to read the default Xray YAML template.')));
+                return false;
+            });
+        }
+
         function applyConfig(current) {
             if (!withinLimit(current))
                 return Promise.resolve(false);
@@ -152,8 +174,8 @@ return view.extend({
             minHeight: '30em',
             rows: 30,
             format: formatConfig,
-            formatLabel: _('Format YAML'),
             check: checkConfig,
+            loadDefault: loadDefaultConfig,
             reload: reloadConfig,
             apply: applyConfig,
             applySave: applySaveConfig

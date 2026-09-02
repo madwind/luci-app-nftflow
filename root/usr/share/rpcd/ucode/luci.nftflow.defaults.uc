@@ -3,15 +3,16 @@
 import { open } from 'fs';
 
 const DEFAULT_FIREWALL = '/usr/share/nftflow/defaults/firewall.nft';
+const DEFAULT_CONFIG = '/usr/share/nftflow/defaults/config.yaml';
 
-function readDefaultFirewall() {
-    let file = open(DEFAULT_FIREWALL, 'r');
+function readDefault(path, label) {
+    let file = open(path, 'r');
     if (!file)
-        return { ok: false, error: 'Default Firewall template is unavailable.' };
+        return { ok: false, error: `Default ${label} template is unavailable.` };
 
     let config = file.read('all') || '';
     file.close();
-    return { ok: true, path: DEFAULT_FIREWALL, config: config };
+    return { ok: true, path: path, config: config };
 }
 
 return {
@@ -19,7 +20,13 @@ return {
         firewall: {
             args: {},
             call: function() {
-                return readDefaultFirewall();
+                return readDefault(DEFAULT_FIREWALL, 'Firewall');
+            }
+        },
+        config: {
+            args: {},
+            call: function() {
+                return readDefault(DEFAULT_CONFIG, 'Xray YAML');
             }
         }
     }
