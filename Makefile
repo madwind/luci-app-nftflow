@@ -34,9 +34,6 @@ LUCI_MAINTAINER:=NftFlow contributors
 
 define Package/luci-app-nftflow/conffiles
 /etc/config/nftflow
-/etc/nftflow/config.yaml
-/etc/nftflow/firewall.nft
-/etc/nftflow/routing.conf
 endef
 
 define Package/luci-app-nftflow/postinst
@@ -53,9 +50,6 @@ chmod 0644 \
 	"$${postinst_root}/usr/share/luci/menu.d/luci-app-nftflow.json" \
 	"$${postinst_root}/etc/config/nftflow" \
 	"$${postinst_root}/www/luci-static/resources/view/nftflow/"*.js 2>/dev/null || true
-[ -f "$${postinst_root}/etc/nftflow/config.yaml" ] && chmod 0600 "$${postinst_root}/etc/nftflow/config.yaml" 2>/dev/null || true
-[ -f "$${postinst_root}/etc/nftflow/firewall.nft" ] && chmod 0600 "$${postinst_root}/etc/nftflow/firewall.nft" 2>/dev/null || true
-[ -f "$${postinst_root}/etc/nftflow/routing.conf" ] && chmod 0600 "$${postinst_root}/etc/nftflow/routing.conf" 2>/dev/null || true
 
 if [ ! -s "$${geoip_target}" ] && [ -s "$${geoip_seed}" ]; then
 	mkdir -p "$${postinst_root}/usr/share/xray" || exit 1
