@@ -64,7 +64,38 @@ function softwarePhase(operation) {
 function formatTimestamp(value) {
     var seconds = Number(value || 0);
     if (!seconds) return '—';
-    try { return new Date(seconds * 1000).toLocaleString(); } catch (e) { return '—'; }
+
+    var delta = seconds - Date.now() / 1000;
+    var absolute = Math.abs(delta);
+    var unit = 'second';
+    var divisor = 1;
+
+    if (absolute >= 365 * 86400) {
+        unit = 'year';
+        divisor = 365 * 86400;
+    } else if (absolute >= 30 * 86400) {
+        unit = 'month';
+        divisor = 30 * 86400;
+    } else if (absolute >= 86400) {
+        unit = 'day';
+        divisor = 86400;
+    } else if (absolute >= 3600) {
+        unit = 'hour';
+        divisor = 3600;
+    } else if (absolute >= 60) {
+        unit = 'minute';
+        divisor = 60;
+    }
+
+    var amount = Math.round(delta / divisor);
+    try {
+        if (typeof Intl !== 'undefined' && typeof Intl.RelativeTimeFormat === 'function')
+            return new Intl.RelativeTimeFormat(undefined, { numeric: 'always' }).format(amount, unit);
+    } catch (e) {}
+
+    var count = Math.abs(amount);
+    var label = unit + (count === 1 ? '' : 's');
+    return amount < 0 ? '%d %s ago'.format(count, label) : 'in %d %s'.format(count, label);
 }
 
 function valueRow(label, field) {
@@ -99,6 +130,7 @@ return view.extend({
         var monitorTasks = {};
         var monitorStops = {};
         var pageVisible = true;
+        var relativeTimeTimer = null;
 
         function setMessage(state, value) {
             nftflowUi.setState(message, state, value);
@@ -397,8 +429,13 @@ return view.extend({
         if (autoResult && autoResult.ok === true) applyAutoSnapshot(autoResult);
         else setMessage('error', nftflowUi.errorMessage(autoResult, _('Unable to read automatic GeoData update settings.')));
 
+        relativeTimeTimer = window.setInterval(function() {
+            ALL_KINDS.forEach(function(kind) { setRowMeta(rows[kind], null, null); });
+        }, 60000);
+
         window.addEventListener('pagehide', function() {
             pageVisible = false;
+            if (relativeTimeTimer !== null) window.clearInterval(relativeTimeTimer);
             Object.keys(monitorStops).forEach(function(kind) { monitorStops[kind](); });
         }, { once: true });
 
