@@ -154,10 +154,11 @@ return view.extend({
         var logFilter = E('input', {
             'class': 'cbi-input-text',
             'type': 'search',
-            'placeholder': _('Filter'),
+            'placeholder': _('Regular expression'),
             'autocomplete': 'off',
             'spellcheck': 'false',
-            'aria-label': _('Filter runtime log')
+            'aria-label': _('Filter runtime log by regular expression'),
+            'title': _('Regular expression, case-insensitive; enter the pattern without /.../.')
         });
         var logOutput = E('textarea', {
             'id': 'nftflow-runtime-log',
@@ -268,13 +269,35 @@ return view.extend({
             return statusRequest;
         }
 
+        function logFilterExpression() {
+            var pattern = logFilter.value.trim();
+            if (!pattern) {
+                logFilter.setCustomValidity('');
+                logFilter.removeAttribute('aria-invalid');
+                return null;
+            }
+
+            try {
+                var expression = new RegExp(pattern, 'i');
+                logFilter.setCustomValidity('');
+                logFilter.removeAttribute('aria-invalid');
+                return expression;
+            } catch (error) {
+                logFilter.setCustomValidity(_('Invalid regular expression.'));
+                logFilter.setAttribute('aria-invalid', 'true');
+                return false;
+            }
+        }
+
         function filteredLogLines() {
-            var filter = logFilter.value.trim().toLowerCase();
-            if (!filter)
+            var expression = logFilterExpression();
+            if (expression === null)
                 return logLines;
+            if (expression === false)
+                return [];
 
             return logLines.filter(function(line) {
-                return line.toLowerCase().indexOf(filter) !== -1;
+                return expression.test(line);
             });
         }
 
