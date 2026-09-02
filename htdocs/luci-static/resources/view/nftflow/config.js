@@ -43,24 +43,90 @@ var callConfigDefault = rpc.declare({
     reject: true
 });
 
+var callGeoStatus = rpc.declare({
+    object: 'luci.nftflow',
+    method: 'geo_status',
+    expect: { '': {} },
+    reject: true
+});
+
 function resultDetail(result, fallback) {
     var detail = [ result && result.error, result && result.detail ].filter(Boolean).join(': ');
     return detail || fallback;
 }
 
+function usesGeoKind(config, kind) {
+    return new RegExp('(^|[^A-Za-z0-9_-])' + kind + ':', 'm').test(String(config || ''));
+}
+
 return view.extend({
     load: function() {
-        return L.resolveDefault(callConfigRead(), { ok: false, error: _('Unable to read the Xray YAML file.') });
+        return Promise.all([
+            L.resolveDefault(callConfigRead(), { ok: false, error: _('Unable to read the Xray YAML file.') }),
+            L.resolveDefault(callGeoStatus(), { ok: false, error: _('Unable to read GeoData status.') })
+        ]);
     },
 
-    render: function(result) {
+    render: function(data) {
         document.title = _('NftFlow | Xray Config');
 
+        var result = data && data[0];
+        var geoResult = data && data[1];
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
+        var geoMessage = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
         var editor;
 
         function setMessage(state, value) {
             nftflowUi.setState(message, state, value);
+        }
+
+        function geoAsset(kind) {
+            return geoResult && geoResult.ok === true && geoResult.assets ? geoResult.assets[kind] : null;
+        }
+
+        function geoPath(kind, asset) {
+            if (asset && asset.path) return asset.path;
+            return kind === 'geoip' ? '/usr/share/xray/geoip.dat' : '/usr/share/xray/geosite.dat';
+        }
+
+        function updateGeoWarning(current) {
+            var value = current.getValue();
+            var warnings = [];
+            var usesGeoip = usesGeoKind(value, 'geoip');
+            var usesGeosite = usesGeoKind(value, 'geosite');
+
+            if (!usesGeoip && !usesGeosite) {
+                nftflowUi.setState(geoMessage, '', '');
+                return;
+            }
+
+            if (!geoResult || geoResult.ok !== true) {
+                nftflowUi.setState(geoMessage, 'warn', _('This configuration references GeoData, but NftFlow could not verify the installed GeoData files. Check the Updates page before applying.'));
+                return;
+            }
+
+            if (usesGeoip) {
+                var geoip = geoAsset('geoip');
+                if (!geoip || geoip.ready !== true) {
+                    warnings.push(_('GeoIP is missing or incomplete. NftFlow may install a minimal geoip:private seed as %s when no GeoIP file exists; that seed does not provide entries such as geoip:cn. Updating GeoData downloads the complete GeoIP database and atomically replaces %s. Until then, Xray validation or apply may fail for GeoIP references.').format(
+                        geoPath('geoip', geoip), geoPath('geoip', geoip)
+                    ));
+                }
+            }
+
+            if (usesGeosite) {
+                var geosite = geoAsset('geosite');
+                if (!geosite || geosite.ready !== true) {
+                    warnings.push(_('GeoSite is missing or incomplete. NftFlow has no built-in GeoSite fallback. Updating GeoData downloads the complete GeoSite database and atomically installs or replaces %s. Until then, Xray validation or apply may fail for GeoSite references.').format(
+                        geoPath('geosite', geosite)
+                    ));
+                }
+            }
+
+            if (warnings.length)
+                nftflowUi.setState(geoMessage, 'warn', warnings.join(' '));
+            else
+                nftflowUi.setState(geoMessage, 'ok', _('GeoData referenced by this configuration is installed.'));
         }
 
         function withinLimit(current) {
@@ -74,6 +140,7 @@ return view.extend({
 
         function formatConfig(current) {
             current.setValue(nftflowYamlFormat.format(current.getValue()));
+            updateGeoWarning(current);
             current.focus();
             setMessage('ok', _('YAML formatted in the editor. Review before applying.'));
             return Promise.resolve(true);
@@ -101,6 +168,7 @@ return view.extend({
                 return nftflowUi.requireOk(next, _('Unable to read the Xray YAML file.'));
             }).then(function(next) {
                 current.markSaved(next.config === undefined || next.config === null ? '' : String(next.config));
+                updateGeoWarning(current);
                 setMessage('ok', _('Saved Xray YAML file reloaded.'));
                 return true;
             }).catch(function(error) {
@@ -115,6 +183,7 @@ return view.extend({
                 return nftflowUi.requireOk(next, _('Unable to read the default Xray YAML template.'));
             }).then(function(next) {
                 current.setValue(next.config || '');
+                updateGeoWarning(current);
                 current.focus();
                 setMessage('notice', _('Default Xray YAML template loaded in the editor. Review before applying.'));
                 return true;
@@ -174,11 +243,13 @@ return view.extend({
             minHeight: '30em',
             rows: 30,
             format: formatConfig,
+            formatLabel: _('Format YAML'),
             check: checkConfig,
             loadDefault: loadDefaultConfig,
             reload: reloadConfig,
             apply: applyConfig,
-            applySave: applySaveConfig
+            applySave: applySaveConfig,
+            onInput: updateGeoWarning
         });
 
         if (result && result.ok === true)
@@ -186,10 +257,13 @@ return view.extend({
         else
             setMessage('error', nftflowUi.errorMessage(result, _('Unable to read the Xray YAML file.')));
 
+        updateGeoWarning(editor);
+
         return E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Xray Config')),
             E('div', { 'class': 'cbi-map-descr' }, _('Edit the complete Xray YAML configuration. Apply uses a temporary runtime copy; Apply & Save also updates the saved YAML file.')),
             E('div', { 'class': 'cbi-section' }, [
+                geoMessage,
                 editor.root,
                 message
             ])
