@@ -357,16 +357,42 @@ local function set_phase(kind, state, phase, message)
     save_state(kind, state)
 end
 
-local function post_check(kind, state)
+local function post_check(kind, state, expected_version)
     set_phase(kind, state, "checking", kind == "nftflow" and "Checking installed NftFlow version" or "Checking installed xray-core version")
-    local result = kind == "nftflow" and probe_nftflow() or probe_xray()
-    apply_probe(state, result)
-    if result.ok == true then
-        state.post_check_error = nil
-    else
-        state.post_check_error = result.error or "verification check failed"
+    local installed = installed_version(PACKAGES[kind])
+    state.installed_version = installed or state.installed_version
+    state.post_check_error = nil
+
+    if not installed then
+        state.post_check_error = kind == "nftflow"
+            and "Unable to verify the installed NftFlow version after update."
+            or "Unable to verify the installed xray-core version after update."
+        return false
     end
-    return result
+    if not expected_version or expected_version == "" then
+        state.post_check_error = kind == "nftflow"
+            and "Unable to determine the expected NftFlow version after update."
+            or "Unable to determine the expected xray-core version after update."
+        return false
+    end
+
+    local relation = version_relation(installed, expected_version)
+    if relation == "=" or relation == ">" then
+        state.update_available = false
+        return true
+    end
+    if relation == "<" then
+        state.update_available = true
+        state.post_check_error = kind == "nftflow"
+            and "The installed NftFlow version is still older than the release version."
+            or "The installed xray-core version is still older than the repository version."
+        return false
+    end
+
+    state.post_check_error = kind == "nftflow"
+        and "Unable to compare the installed NftFlow version after update."
+        or "Unable to compare the installed xray-core version after update."
+    return false
 end
 
 local function worker_nftflow(state)
@@ -399,7 +425,7 @@ local function worker_nftflow(state)
     local install_ok, install_output = exec_capture("apk add --allow-untrusted --upgrade " .. shellquote(package_path))
     os.remove(package_path)
     if not install_ok then return fail_worker("nftflow", state, "NftFlow installation failed: " .. compact_error(install_output)) end
-    post_check("nftflow", state)
+    post_check("nftflow", state, manifest.version)
     return done_worker("nftflow", state, true, "NftFlow updated successfully")
 end
 
@@ -416,7 +442,7 @@ local function worker_xray(state)
     local ok, output = exec_capture("apk -U upgrade " .. shellquote(PACKAGES.xray))
     if was_running then exec_quiet("/etc/init.d/nftflow start") end
     if not ok then return fail_worker("xray", state, "xray-core installation failed: " .. compact_error(output)) end
-    post_check("xray", state)
+    post_check("xray", state, probe.latest_version)
     return done_worker("xray", state, true, "Xray Core updated successfully")
 end
 
