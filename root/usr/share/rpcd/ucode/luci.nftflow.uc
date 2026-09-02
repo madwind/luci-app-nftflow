@@ -138,18 +138,17 @@ function firewall_read_effective() {
 }
 
 function routing_runtime_text(table_id, ipv6) {
-    let output = [];
     let rule4 = capture_command('ip -4 rule show');
     let route4 = capture_command(`ip -4 route show table ${table_id}`);
-    output.push('# ip -4 rule show\n' + (rule4.ok ? trim(rule4.output) : '(unavailable)'));
-    output.push(`# ip -4 route show table ${table_id}\n` + (route4.ok ? trim(route4.output) : '(unavailable)'));
+    let output = '# ip -4 rule show\n' + (rule4.ok ? trim(rule4.output) : '(unavailable)') +
+        `\n\n# ip -4 route show table ${table_id}\n` + (route4.ok ? trim(route4.output) : '(unavailable)');
     if (ipv6) {
         let rule6 = capture_command('ip -6 rule show');
         let route6 = capture_command(`ip -6 route show table ${table_id}`);
-        output.push('# ip -6 rule show\n' + (rule6.ok ? trim(rule6.output) : '(unavailable)'));
-        output.push(`# ip -6 route show table ${table_id}\n` + (route6.ok ? trim(route6.output) : '(unavailable)'));
+        output += '\n\n# ip -6 rule show\n' + (rule6.ok ? trim(rule6.output) : '(unavailable)') +
+            `\n\n# ip -6 route show table ${table_id}\n` + (route6.ok ? trim(route6.output) : '(unavailable)');
     }
-    return join('\n\n', output) + '\n';
+    return output + '\n';
 }
 
 function routing_read_effective() {
