@@ -8,7 +8,7 @@ OLD_TAG=nftflow-geodata-weekly
 SOFTWARE=/usr/libexec/nftflow/update.lua
 GEODATA=/usr/libexec/nftflow/geo-update.lua
 CTL=/usr/libexec/nftflow/nftflowctl
-DEFAULT_CONFIG=/usr/share/nftflow/defaults/config.yaml
+BATCH_BACKUP=/tmp/nftflow-update/batch-backup
 SCHEDULE='17 4 * * 0'
 SCHEDULE_MINUTE=17
 SCHEDULE_HOUR=4
@@ -198,24 +198,75 @@ runtime_running() {
     [ "$running" = 1 ]
 }
 
-preflight_nftflow() {
-    local xray_bin config_file asset_dir
-    xray_bin="$(uci -q get nftflow.main.xray_bin 2>/dev/null || true)"
-    config_file="$(uci -q get nftflow.main.config_file 2>/dev/null || true)"
-    asset_dir="$(uci -q get nftflow.main.asset_dir 2>/dev/null || true)"
-    [ -n "$xray_bin" ] || xray_bin=/usr/bin/xray
-    [ -n "$config_file" ] || config_file=/etc/nftflow/config.yaml
-    [ -n "$asset_dir" ] || asset_dir=/usr/share/xray
-    [ -r "$config_file" ] || config_file="$DEFAULT_CONFIG"
-    [ -x "$xray_bin" ] && [ -r "$config_file" ] || return 1
-    XRAY_LOCATION_ASSET="$asset_dir" "$xray_bin" run -test -format yaml -config "$config_file" >/dev/null 2>&1
+wait_runtime_running() {
+    local stable=0 count=0
+    while [ "$count" -lt 6 ]; do
+        if runtime_running; then
+            stable=$((stable + 1))
+            [ "$stable" -ge 3 ] && return 0
+        else
+            stable=0
+        fi
+        sleep 1
+        count=$((count + 1))
+    done
+    return 1
 }
 
-finalize_geo() {
-    local action="$1" kind
+geo_asset_path() {
+    local kind="$1" asset_dir configured
+    asset_dir="$(uci -q get nftflow.main.asset_dir 2>/dev/null || true)"
+    [ -n "$asset_dir" ] || asset_dir=/usr/share/xray
+    configured="$(uci -q get "nftflow.main.${kind}_file" 2>/dev/null || true)"
+    [ -n "$configured" ] && printf '%s\n' "$configured" || printf '%s/%s.dat\n' "$asset_dir" "$kind"
+}
+
+snapshot_geo() {
+    local kind="$1" asset version_path
+    asset="$(geo_asset_path "$kind")" || return 1
+    version_path="$asset.version"
+    mkdir -p "$BATCH_BACKUP" || return 1
+    rm -f "$BATCH_BACKUP/$kind.dat" "$BATCH_BACKUP/$kind.version" \
+        "$BATCH_BACKUP/$kind.had-file" "$BATCH_BACKUP/$kind.had-version"
+    if [ -f "$asset" ]; then
+        cp -p "$asset" "$BATCH_BACKUP/$kind.dat" || return 1
+        touch "$BATCH_BACKUP/$kind.had-file" || return 1
+    fi
+    if [ -f "$version_path" ]; then
+        cp -p "$version_path" "$BATCH_BACKUP/$kind.version" || return 1
+        touch "$BATCH_BACKUP/$kind.had-version" || return 1
+    fi
+    return 0
+}
+
+restore_geo() {
+    local kind="$1" asset version_path
+    asset="$(geo_asset_path "$kind")" || return 1
+    version_path="$asset.version"
+    mkdir -p "${asset%/*}" || return 1
+    if [ -e "$BATCH_BACKUP/$kind.had-file" ]; then
+        cp -p "$BATCH_BACKUP/$kind.dat" "$asset" || return 1
+    else
+        rm -f "$asset"
+    fi
+    if [ -e "$BATCH_BACKUP/$kind.had-version" ]; then
+        cp -p "$BATCH_BACKUP/$kind.version" "$version_path" || return 1
+    else
+        rm -f "$version_path"
+    fi
+    return 0
+}
+
+restore_all_geo() {
+    local kind
     for kind in geoip geosite; do
-        /usr/bin/lua "$GEODATA" "$action" "$kind" >/dev/null 2>&1 || true
+        [ -e "$BATCH_BACKUP/$kind.had-file" ] || [ -e "$BATCH_BACKUP/$kind.had-version" ] || continue
+        restore_geo "$kind" || logger -t nftflow-update "$kind rollback after batch restart failure failed"
     done
+}
+
+clear_batch_backup() {
+    rm -rf "$BATCH_BACKUP"
 }
 
 auto_option() { printf '%s_auto_update\n' "$1"; }
@@ -223,6 +274,7 @@ auto_option() { printf '%s_auto_update\n' "$1"; }
 run_checks() {
     local kind option result failed=0 did_update=0 was_running=0
     runtime_running && was_running=1
+    clear_batch_backup
 
     for kind in nftflow xray geoip geosite; do
         result="$(check_one "$kind" 2>&1)" || {
@@ -232,13 +284,25 @@ run_checks() {
     done
 
     # Update data first, then Xray, and NftFlow itself last. Component workers
-    # defer service restarts so the whole batch validates and reloads Xray once.
+    # defer service restarts so the whole batch reloads Xray at most once.
     for kind in geoip geosite xray nftflow; do
         option="$(auto_option "$kind")"
         [ "$(flag "$option")" = 1 ] || continue
         checked_update_available "$kind" || continue
+
+        case "$kind" in
+            geoip|geosite)
+                snapshot_geo "$kind" || {
+                    logger -t nftflow-update "$kind automatic update backup failed"
+                    failed=1
+                    continue
+                }
+                ;;
+        esac
+
         result="$(start_one "$kind" 2>&1)" || {
             logger -t nftflow-update "$kind automatic update could not start: $result"
+            case "$kind" in geoip|geosite) restore_geo "$kind" || true;; esac
             failed=1
             continue
         }
@@ -246,50 +310,40 @@ run_checks() {
             did_update=1
         else
             logger -t nftflow-update "$kind automatic update failed"
+            case "$kind" in geoip|geosite) restore_geo "$kind" || true;; esac
             failed=1
         fi
     done
 
-    if [ "$did_update" = 1 ]; then
-        if ! preflight_nftflow; then
-            logger -t nftflow-update 'Xray preflight failed after automatic update batch; staged GeoData will be rolled back and NftFlow will not be restarted'
-            finalize_geo rollback
-            failed=1
+    if [ "$did_update" = 1 ] && [ "$was_running" = 1 ]; then
+        /etc/init.d/nftflow restart >/dev/null 2>&1 || true
+        if wait_runtime_running; then
+            clear_batch_backup
             return "$failed"
         fi
 
-        if [ "$was_running" = 1 ]; then
-            if /etc/init.d/nftflow restart >/dev/null 2>&1; then
-                sleep 2
-            fi
-            if runtime_running; then
-                finalize_geo commit
-            else
-                logger -t nftflow-update 'NftFlow failed to become ready after automatic update batch; stopping retries and rolling back staged GeoData'
-                /etc/init.d/nftflow stop >/dev/null 2>&1 || true
-                finalize_geo rollback
-                failed=1
-                if preflight_nftflow; then
-                    /etc/init.d/nftflow start >/dev/null 2>&1 || true
-                fi
-            fi
+        logger -t nftflow-update 'NftFlow did not remain running after the automatic update batch; stopping retries and restoring previous GeoData'
+        /etc/init.d/nftflow stop >/dev/null 2>&1 || true
+        restore_all_geo
+        if /etc/init.d/nftflow start >/dev/null 2>&1 && wait_runtime_running; then
+            logger -t nftflow-update 'NftFlow recovered after restoring previous GeoData'
         else
-            finalize_geo commit
+            /etc/init.d/nftflow stop >/dev/null 2>&1 || true
+            logger -t nftflow-update 'NftFlow recovery failed; service was left stopped to prevent a respawn loop'
         fi
-    elif [ "$was_running" = 1 ] && ! runtime_running; then
-        # A failed package replacement may have stopped the service. Restore it
-        # once only; procd's bounded respawn policy handles any further crash.
-        if preflight_nftflow; then
-            /etc/init.d/nftflow start >/dev/null 2>&1 || {
-                logger -t nftflow-update 'NftFlow service restoration after failed automatic update failed'
-                failed=1
-            }
-        else
-            logger -t nftflow-update 'NftFlow preflight failed after an unsuccessful automatic update; service was left stopped to avoid a respawn loop'
+        failed=1
+    elif [ "$did_update" = 0 ] && [ "$was_running" = 1 ] && ! runtime_running; then
+        # A failed package replacement may have stopped the service. Try once,
+        # then stop it explicitly if it cannot remain up.
+        /etc/init.d/nftflow start >/dev/null 2>&1 || true
+        if ! wait_runtime_running; then
+            /etc/init.d/nftflow stop >/dev/null 2>&1 || true
+            logger -t nftflow-update 'NftFlow recovery after a failed automatic update did not stabilize; service was left stopped'
             failed=1
         fi
     fi
 
+    clear_batch_backup
     return "$failed"
 }
 
