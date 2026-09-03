@@ -6,8 +6,6 @@ CONFIG_CTL=/usr/libexec/nftflow/config.lua
 FIREWALL_CTL=/usr/libexec/nftflow/firewall.lua
 ROUTING_CTL=/usr/libexec/nftflow/routing.lua
 GEO_STATUS_CTL=/usr/libexec/nftflow/geo-status.lua
-GEO_CHECK_CTL=/usr/libexec/nftflow/geo-check.lua
-STATUS_BIN=/usr/libexec/nftflow/status-bin
 FIREWALL_SOURCE=/etc/nftflow/firewall.nft
 FIREWALL_DEFAULT=/usr/share/nftflow/defaults/firewall.nft
 ROUTING_SOURCE=/etc/nftflow/routing.conf
@@ -118,12 +116,9 @@ case "$1" in
     geo)
         case "${2:-}" in
             status) exec /usr/bin/lua "$GEO_STATUS_CTL" ;;
-            check) exec /usr/bin/lua "$GEO_CHECK_CTL" "$3" ;;
             *) printf '%s\n' '{"ok":false,"error":"unsupported GeoData command"}'; exit 1 ;;
         esac ;;
-    status)
-        NFTFLOW_NFT_TERSE=1 PATH="$STATUS_BIN:$PATH" exec /usr/bin/lua "$RUNTIME_CTL" "$@" ;;
-    prepare|cleanup|state|action|reload|service-sync)
+    status|prepare|cleanup|state|action|reload|service-sync)
         exec /usr/bin/lua "$RUNTIME_CTL" "$@" ;;
     *)
         printf '%s\n' '{"ok":false,"error":"unsupported nftflowctl command"}'; exit 1 ;;
