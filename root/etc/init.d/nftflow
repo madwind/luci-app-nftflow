@@ -188,7 +188,7 @@ start_service() {
     procd_set_param limits nofile="${nofile} ${nofile}"
     procd_set_param stdout 1
     procd_set_param stderr 1
-    procd_set_param respawn 60 5 5
+    procd_set_param respawn 60 5 3
     procd_close_instance
 }
 
