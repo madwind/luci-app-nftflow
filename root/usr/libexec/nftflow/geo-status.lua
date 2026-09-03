@@ -10,7 +10,7 @@ local RUNTIME = "/var/run/nftflow"
 local DEFAULT_GEOIP_URL = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
 local DEFAULT_GEBSITE_URL = "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
 
-local function encode(value) if jsonc.stringify then return jsonc.stringify(value) end; return jsonc.encode(value) end
+local function encode(value) if jsonc.stringify then return jsonc.stringify(value) end return jsonc.encode(value) end
 local function decode(value) local decoder=jsonc.parse or jsonc.decode; local ok,result=pcall(decoder,value); return ok and result or nil end
 local function trim(value) return (tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")) end
 local function exec_capture(command)
@@ -25,12 +25,28 @@ local function asset(kind)
     local asset_dir=uci_get("asset_dir","/usr/share/xray")
     local path=kind=="geoip" and uci_get("geoip_file",asset_dir.."/geoip.dat") or uci_get("geosite_file",asset_dir.."/geosite.dat")
     local url=kind=="geoip" and uci_get("geoip_url",DEFAULT_GEOIP_URL) or uci_get("geosite_url",DEFAULT_GEBSITE_URL)
-    local stat=nixio_fs.stat(path); local exists=type(stat)=="table"; local size=exists and tonumber(stat.size) or 0; local state=update_state(kind)
+    local stat=nixio_fs.stat(path)
+    local exists=type(stat)=="table"
+    local size=exists and tonumber(stat.size) or 0
+    local state=update_state(kind)
     local local_version=exists and size>=1024 and (geodata_version.read(kind) or state.local_version or state.source_version) or nil
-    return {kind=kind,path=path,url=url,exists=exists,size=size,mtime=exists and tonumber(stat.mtime) or nil,ready=exists and size>=1024,local_version=local_version,checked=tonumber(state.checked),check_ok=state.check_ok,latest_version=state.latest_version,update_available=state.update_available,last_check_error=state.last_check_error,last_update=tonumber(state.last_update) or (state.updated==true and tonumber(state.finished) or nil),post_check_error=state.post_check_error,update=state}
+    local available=nil
+    if state.check_ok==true then available=state.update_available end
+    return {
+        kind=kind,path=path,url=url,exists=exists,size=size,mtime=exists and tonumber(stat.mtime) or nil,
+        ready=exists and size>=1024,local_version=local_version,checked=tonumber(state.checked),check_ok=state.check_ok,
+        latest_version=state.latest_version,update_available=available,last_check_error=state.last_check_error,
+        last_update=tonumber(state.last_update) or (state.updated==true and tonumber(state.finished) or nil),
+        post_check_error=state.post_check_error,update=state
+    }
 end
 
-local assets={geoip=asset("geoip"),geosite=asset("geosite")}; local active={}
-for _,kind in ipairs({"geoip","geosite"}) do local state=assets[kind].update; if state.status=="starting" or state.status=="running" or state.status=="stopping" then active[#active+1]=state end end
-local update={ok=true,status="idle"}; if #active==1 then update=active[1] elseif #active>1 then update={ok=true,status="running",kind="all"} end
+local assets={geoip=asset("geoip"),geosite=asset("geosite")}
+local active={}
+for _,kind in ipairs({"geoip","geosite"}) do
+    local state=assets[kind].update
+    if state.status=="starting" or state.status=="running" or state.status=="stopping" then active[#active+1]=state end
+end
+local update={ok=true,status="idle"}
+if #active==1 then update=active[1] elseif #active>1 then update={ok=true,status="running",kind="all"} end
 io.write(encode({ok=true,ready=assets.geoip.ready and assets.geosite.ready,assets=assets,update=update}).."\n")
