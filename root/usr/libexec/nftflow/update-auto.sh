@@ -159,21 +159,28 @@ checked_update_available() {
 
 start_one() {
     case "$1" in
-        nftflow|xray) /usr/bin/lua "$SOFTWARE" start "$1";;
-        geoip|geosite) /usr/bin/lua "$GEODATA" start "$1";;
+        nftflow|xray) NFTFLOW_DEFER_RESTART=1 /usr/bin/lua "$SOFTWARE" start "$1";;
+        geoip|geosite) NFTFLOW_DEFER_RESTART=1 /usr/bin/lua "$GEODATA" start "$1";;
         *) return 2;;
     esac
 }
 
 wait_one() {
-    local kind="$1" path raw status count=0
+    local kind="$1" path raw status updated count=0
     path="$(state_path "$kind")"
     while [ "$count" -lt 600 ]; do
         [ -s "$path" ] || return 1
         raw="$(cat "$path" 2>/dev/null)" || return 1
         json_load "$raw" 2>/dev/null || return 1
         json_get_var status status
-        case "$status" in done) return 0;; failed|stopped) return 1;; esac
+        case "$status" in
+            done)
+                json_get_var updated updated
+                [ "$updated" = 1 ]
+                return
+                ;;
+            failed|stopped) return 1;;
+        esac
         sleep 1
         count=$((count + 1))
     done
@@ -184,7 +191,9 @@ wait_one() {
 auto_option() { printf '%s_auto_update\n' "$1"; }
 
 run_checks() {
-    local kind option result failed=0
+    local kind option result failed=0 did_update=0 was_running=0
+    /etc/init.d/nftflow running >/dev/null 2>&1 && was_running=1
+
     for kind in nftflow xray geoip geosite; do
         result="$(check_one "$kind" 2>&1)" || {
             logger -t nftflow-update "$kind scheduled check failed: $result"
@@ -192,8 +201,8 @@ run_checks() {
         }
     done
 
-    # Update data first, then Xray, and NftFlow itself last so package replacement
-    # cannot interrupt the rest of this controller.
+    # Update data first, then Xray, and NftFlow itself last. Component workers
+    # defer service restarts so the whole batch reloads Xray at most once.
     for kind in geoip geosite xray nftflow; do
         option="$(auto_option "$kind")"
         [ "$(flag "$option")" = 1 ] || continue
@@ -203,11 +212,28 @@ run_checks() {
             failed=1
             continue
         }
-        wait_one "$kind" || {
+        if wait_one "$kind"; then
+            did_update=1
+        else
             logger -t nftflow-update "$kind automatic update failed"
             failed=1
-        }
+        fi
     done
+
+    if [ "$was_running" = 1 ]; then
+        if [ "$did_update" = 1 ]; then
+            /etc/init.d/nftflow restart >/dev/null 2>&1 || {
+                logger -t nftflow-update 'NftFlow restart after automatic update batch failed'
+                failed=1
+            }
+        elif ! /etc/init.d/nftflow running >/dev/null 2>&1; then
+            /etc/init.d/nftflow start >/dev/null 2>&1 || {
+                logger -t nftflow-update 'NftFlow service restoration after failed automatic update failed'
+                failed=1
+            }
+        fi
+    fi
+
     return "$failed"
 }
 
