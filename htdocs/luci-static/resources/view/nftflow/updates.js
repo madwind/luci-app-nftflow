@@ -147,7 +147,7 @@ return view.extend({
         function updateButtons(row, operation) {
             var active = activeStatus(operation && operation.status);
             row.active = active;
-            row.update.disabled = row.starting || active || checkingAll || row.updateAvailable !== true;
+            row.update.disabled = row.starting || row.checking || active || checkingAll;
             if (row.starting || !active) row.stop.disabled = true;
             else if (row.kind === 'xray') row.stop.disabled = true;
             else if (row.kind === 'nftflow' && operation.phase === 'installing') row.stop.disabled = true;
@@ -190,7 +190,7 @@ return view.extend({
                 version: E('span'),
                 history: E('div', { 'class': 'cbi-section-descr' }),
                 auto: E('input', { 'type': 'checkbox', 'disabled': '' }),
-                update: E('button', { 'class': 'btn cbi-button cbi-button-apply', 'type': 'button', 'disabled': '' }, _('Update')),
+                update: E('button', { 'class': 'btn cbi-button cbi-button-apply', 'type': 'button' }, _('Update')),
                 stop: E('button', { 'class': 'btn cbi-button cbi-button-negative', 'type': 'button', 'disabled': '' }, _('Stop')),
                 installedVersion: '',
                 latestVersion: '',
@@ -313,7 +313,6 @@ return view.extend({
                 }).catch(function(error) {
                     row.checking = false;
                     row.updateAvailable = null;
-                    row.update.disabled = true;
                     failures[kind] = '%s: %s'.format(componentLabel(kind), nftflowUi.errorMessage(error, _('Check failed')));
                     nftflowUi.setState(row.status, 'error', nftflowUi.errorMessage(error, _('Check failed')));
                 });
@@ -321,6 +320,7 @@ return view.extend({
 
             return Promise.all(checks).then(function() {
                 checkingAll = false;
+                ALL_KINDS.forEach(function(kind) { updateButtons(rows[kind], {}); });
                 var failureMessages = ALL_KINDS.map(function(kind) { return failures[kind]; }).filter(Boolean);
                 if (failureMessages.length) setMessage('error', failureMessages.join(' · '));
                 else setMessage('ok', _('All update checks completed.'));
@@ -328,8 +328,8 @@ return view.extend({
             });
         }
 
-        function startUpdate(row) {
-            if (checkingAll || row.starting || row.updateAvailable !== true || row.active) return Promise.resolve();
+        function installUpdate(row) {
+            if (row.starting || row.active) return Promise.resolve();
             row.starting = true;
             row.update.disabled = true;
             row.stop.disabled = true;
@@ -347,6 +347,31 @@ return view.extend({
                 updateButtons(row, {});
                 setMessage('error', nftflowUi.errorMessage(error, _('%s update could not start.').format(componentLabel(row.kind))));
                 return refresh();
+            });
+        }
+
+        function startUpdate(row) {
+            if (checkingAll || row.starting || row.checking || row.active) return Promise.resolve();
+            if (row.updateAvailable === true) return installUpdate(row);
+
+            row.checking = true;
+            updateButtons(row, {});
+            nftflowUi.setState(row.status, 'notice', _('Checking for updates...'));
+            setMessage('notice', _('Checking %s before updating...').format(componentLabel(row.kind)));
+
+            return callUpdateCheck(row.kind).then(function(result) {
+                result = nftflowUi.requireOk(result, _('%s update check failed.').format(componentLabel(row.kind)));
+                applyCheckResult(row, result);
+                if (row.updateAvailable === true) return installUpdate(row);
+                setMessage('ok', _('%s is already up to date.').format(componentLabel(row.kind)));
+                return false;
+            }).catch(function(error) {
+                row.checking = false;
+                row.updateAvailable = null;
+                updateButtons(row, {});
+                nftflowUi.setState(row.status, 'error', nftflowUi.errorMessage(error, _('Check failed')));
+                setMessage('error', nftflowUi.errorMessage(error, _('%s update check failed.').format(componentLabel(row.kind))));
+                return false;
             });
         }
 
@@ -415,7 +440,7 @@ return view.extend({
         return E('div', { 'class': 'cbi-map', 'id': 'nftflow-updates' }, [
             layoutStyle,
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Updates')),
-            E('div', { 'class': 'cbi-map-descr' }, _('Checks discover available versions. Updates install only a version already found by a check.')),
+            E('div', { 'class': 'cbi-map-descr' }, _('Update installs a known newer version immediately, or checks that component first when no update is known.')),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Update checks')),
                 valueRow(_('Automatic update checks'), E('label', {}, [ checkEnabled, ' ', scheduleText ])),
