@@ -185,7 +185,6 @@ const methods = {
     config_apply: { args: { config: '' }, call: request => run_ctl_file('config-apply-file', request && request.args ? request.args.config || '' : '') },
     config_save: { args: { config: '' }, call: request => run_ctl_file('config-save-file', request && request.args ? request.args.config || '' : '') },
     geo_status: { args: {}, call: () => run_ctl([ 'geo', 'status' ]) },
-    geo_stop: { args: { kind: 'geosite' }, call: request => { let kind = request && request.args ? request.args.kind || '' : ''; if (!valid_geo_kind(kind)) return { ok: false, error: 'invalid geodata kind' }; return run_stop_update(kind); } },
     update_status: { args: {}, call: () => run_software_update('status') },
     update_check: { args: { kind: 'nftflow' }, call: request => update_check(request && request.args ? request.args.kind || '' : '') },
     update_install: { args: { kind: 'nftflow' }, call: request => update_install(request && request.args ? request.args.kind || '' : '') },
