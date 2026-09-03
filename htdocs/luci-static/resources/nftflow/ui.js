@@ -25,14 +25,6 @@ function requireOk(result, fallback) {
     return result;
 }
 
-function notifyError(error, fallback) {
-    return errorMessage(error, fallback);
-}
-
-function notifySuccess(message) {
-    return String(message === undefined || message === null ? '' : message);
-}
-
 function notifyFatal(error, fallback) {
     var message = errorMessage(error, fallback);
     luciUi.addNotification(null, E('p', {}, message), 'error');
@@ -157,11 +149,8 @@ return baseclass.extend({
     byteLength: byteLength,
     errorMessage: errorMessage,
     formatBytes: formatBytes,
-    notifyError: notifyError,
     notifyFatal: notifyFatal,
-    notifySuccess: notifySuccess,
     requireOk: requireOk,
     setState: setState,
-    setText: setText,
-    truncateBytes: truncateBytes
+    setText: setText
 });
