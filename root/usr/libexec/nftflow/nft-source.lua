@@ -2,6 +2,7 @@
 -- Narrow parser for NftFlow-owned nftables tables and GeoIP macros.
 
 local M = {}
+local RUNTIME_ELEMENT_FOLD_THRESHOLD = 128
 
 local function mask(raw)
     local output, quoted, escaped, comment = {}, false, false, false
@@ -166,13 +167,15 @@ function M.macro_sets(source, owned_table)
 end
 
 function M.fold_runtime(runtime, source_sets)
-    if not source_sets or next(source_sets) == nil then return runtime end
+    source_sets = source_sets or {}
     local parsed = M.parse(runtime)
     if not parsed then return runtime end
     local replacements = {}
     for _, set_spec in ipairs(parsed.sets) do
         local source = source_sets[set_spec.key]
-        if source and set_spec.elements_open and source.elements_body ~= nil then
+        local element_count = set_spec.elements_body ~= nil and count_elements(set_spec.elements_body) or 0
+        local from_macro = source and source.elements_body ~= nil
+        if set_spec.elements_open and (from_macro or element_count > RUNTIME_ELEMENT_FOLD_THRESHOLD) then
             replacements[#replacements + 1] = {
                 start_position = set_spec.elements_open + 1,
                 finish_position = set_spec.elements_close - 1,
