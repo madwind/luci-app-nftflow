@@ -2,7 +2,7 @@
 -- Narrow parser for NftFlow-owned nftables tables and GeoIP macros.
 
 local M = {}
-local RUNTIME_ELEMENT_FOLD_THRESHOLD = 128
+local RUNTIME_ELEMENT_FOLD_THRESHOLD = 10
 
 local function mask(raw)
     local output, quoted, escaped, comment = {}, false, false, false
