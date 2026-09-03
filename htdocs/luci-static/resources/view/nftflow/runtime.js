@@ -57,7 +57,7 @@ return view.extend({
         paths.anonymous = true;
 
         addValueOption(paths, 'xray_bin', _('Xray binary'), _('Path to the installed Xray executable.'), '/usr/bin/xray');
-        addValueOption(paths, 'config_file', _('JSON file'), _('Complete hand-written Xray configuration.'), '/etc/nftflow/config.json');
+        addValueOption(paths, 'config_file', _('YAML file'), _('Complete hand-written Xray YAML configuration.'), '/etc/nftflow/config.yaml');
         addValueOption(paths, 'asset_dir', _('Asset directory'), _('Directory containing Xray GeoData assets.'), '/usr/share/xray');
 
         var geodata = map.section(form.NamedSection, 'main', 'nftflow', _('GeoData'));

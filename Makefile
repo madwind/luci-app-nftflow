@@ -43,7 +43,6 @@ geoip_seed="$${postinst_root}/usr/share/nftflow/geoip-private.dat"
 geoip_target="$${postinst_root}/usr/share/xray/geoip.dat"
 
 chmod 0755 "$${postinst_root}/etc/init.d/nftflow" "$${postinst_root}/usr/libexec/nftflow/nftflowctl" 2>/dev/null || true
-rm -f "$${postinst_root}/usr/share/nftables.d/table-pre/30-nftflow.nft"
 chmod 0644 \
 	"$${postinst_root}/usr/share/rpcd/ucode/luci.nftflow.uc" \
 	"$${postinst_root}/usr/share/rpcd/acl.d/luci-app-nftflow.json" \
@@ -58,27 +57,6 @@ if [ ! -s "$${geoip_target}" ] && [ -s "$${geoip_seed}" ]; then
 fi
 
 [ -n "$${IPKG_INSTROOT}" ] || {
-	legacy_config=/etc/nftflow/config.json
-	yaml_config=/etc/nftflow/config.yaml
-	current_config="$$(uci -q get nftflow.main.config_file 2>/dev/null)"
-	case "$${current_config}" in
-		''|/etc/nftflow/config.json|/etc/nftflow/config.yaml)
-			if [ -f "$${legacy_config}" ]; then
-				migration_tmp="/tmp/nftflow-config-migrate.$$$$"
-				if [ -x /usr/bin/xray ] && /usr/bin/xray run -dump -format json -config "$${legacy_config}" > "$${migration_tmp}" 2>/dev/null && [ -s "$${migration_tmp}" ]; then
-					mv "$${migration_tmp}" "$${yaml_config}" || exit 1
-				else
-					rm -f "$${migration_tmp}"
-					cp "$${legacy_config}" "$${yaml_config}" || exit 1
-				fi
-				chmod 0600 "$${yaml_config}" 2>/dev/null || true
-				rm -f "$${legacy_config}"
-			fi
-			uci set nftflow.main.config_file='/etc/nftflow/config.yaml'
-			uci commit nftflow
-			;;
-	esac
-
 	rm -f /tmp/luci-indexcache /tmp/luci-indexcache.* /tmp/luci-modulecache /tmp/luci-modulecache.*
 	rm -rf /tmp/luci-modulecache/
 	/etc/init.d/rpcd reload 2>/dev/null
@@ -110,10 +88,6 @@ define Package/luci-app-nftflow/prerm
 exit 0
 endef
 
-LUCI_MK:=$(TOPDIR)/feeds/luci/luci.mk
-ifeq ($(wildcard $(LUCI_MK)),)
-LUCI_MK:=$(TOPDIR)/luci.mk
-endif
-include $(LUCI_MK)
+include $(TOPDIR)/feeds/luci/luci.mk
 
 # call BuildPackage - OpenWrt buildroot signature

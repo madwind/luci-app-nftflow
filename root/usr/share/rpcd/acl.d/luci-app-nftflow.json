@@ -2,63 +2,41 @@
     "luci-app-nftflow": {
         "description": "Manage NftFlow runtime, configuration, firewall, routing and updates",
         "read": {
-            "uci": [
-                "nftflow"
-            ],
+            "uci": [ "nftflow" ],
             "ubus": {
-                "log": [
-                    "read",
-                    ":subscribe"
-                ],
+                "log": [ "read", ":subscribe" ],
                 "luci.nftflow": [
                     "status",
-                    "health",
                     "firewall_read",
                     "firewall_validate",
                     "routing_read",
                     "routing_validate",
-                    "connectivity_test",
                     "config_read",
                     "config_validate",
                     "geo_status",
-                    "geo_check",
-                    "update_status",
-                    "update_check"
+                    "update_status"
                 ],
-                "luci.nftflow.defaults": [
-                    "firewall",
-                    "config",
-                    "routing"
-                ],
-                "luci.nftflow.geoops": [
-                    "status"
-                ]
+                "luci.nftflow.defaults": [ "firewall", "config", "routing" ],
+                "luci.nftflow.geoops": [ "status" ]
             }
         },
         "write": {
-            "uci": [
-                "nftflow"
-            ],
+            "uci": [ "nftflow" ],
             "ubus": {
                 "luci.nftflow": [
                     "config_apply",
                     "config_save",
                     "firewall_save",
                     "firewall_apply",
-                    "route_apply",
                     "routing_save",
                     "routing_apply",
-                    "geo_update",
                     "geo_stop",
                     "update_install",
                     "update_stop",
                     "action",
                     "service_sync"
                 ],
-                "luci.nftflow.geoops": [
-                    "set_auto",
-                    "update"
-                ]
+                "luci.nftflow.geoops": [ "set_auto", "update" ]
             }
         }
     }

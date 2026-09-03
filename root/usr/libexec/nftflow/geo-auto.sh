@@ -4,7 +4,6 @@
 
 CRONTAB=/etc/crontabs/root
 TAG=nftflow-geodata-weekly
-LEGACY_MONTHLY=nftflow-geodata-monthly
 SMART=/usr/libexec/nftflow/geo-smart-update.lua
 LOG=/var/log/nftflow/geo-auto-update.log
 
@@ -22,7 +21,7 @@ reload_cron() {
 
 remove_schedule() {
     [ -f "$CRONTAB" ] || return 0
-    sed -i -e "/$TAG/d" -e "/$LEGACY_MONTHLY/d" "$CRONTAB" || return 1
+    sed -i "/$TAG/d" "$CRONTAB" || return 1
     reload_cron
 }
 
@@ -32,7 +31,7 @@ sync_schedule() {
     geosite="$(flag geosite)"
     mkdir -p /etc/crontabs /var/log/nftflow || return 1
     touch "$CRONTAB" || return 1
-    sed -i -e "/$TAG/d" -e "/$LEGACY_MONTHLY/d" "$CRONTAB" || return 1
+    sed -i "/$TAG/d" "$CRONTAB" || return 1
     if [ "$geoip" = '1' ] || [ "$geosite" = '1' ]; then
         printf '%s\n' "17 4 * * 0 /usr/bin/lua $SMART auto >>$LOG 2>&1 # $TAG" >>"$CRONTAB" || return 1
     fi
