@@ -68,7 +68,9 @@ fi
 	/usr/libexec/nftflow/update-auto.sh sync >/dev/null 2>&1 || logger -t nftflow "cannot synchronize automatic update check schedule"
 	if [ "$$(uci -q get nftflow.main.enabled 2>/dev/null)" = "1" ]; then
 		/etc/init.d/nftflow enable >/dev/null 2>&1 || true
-		/etc/init.d/nftflow start >/dev/null 2>&1 || logger -t nftflow "service restart after package upgrade failed"
+		if [ "$${NFTFLOW_DEFER_RESTART:-0}" != "1" ]; then
+			/etc/init.d/nftflow start >/dev/null 2>&1 || logger -t nftflow "service restart after package upgrade failed"
+		fi
 	else
 		/etc/init.d/nftflow disable >/dev/null 2>&1 || true
 	fi
