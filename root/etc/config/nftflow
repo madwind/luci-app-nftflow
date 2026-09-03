@@ -1,6 +1,5 @@
 config nftflow 'main'
     option enabled '0'
-    option mode 'tproxy'
     option xray_bin '/usr/bin/xray'
     option config_file '/etc/nftflow/config.yaml'
     option asset_dir '/usr/share/xray'
