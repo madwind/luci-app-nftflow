@@ -203,8 +203,8 @@ return view.extend({
             };
             row.history.hidden = true;
             row.auto.addEventListener('change', function() { setAuto(row); });
-            row.update.addEventListener('click', ui.createHandlerFn(row.update, function() { return startUpdate(row); }));
-            row.stop.addEventListener('click', ui.createHandlerFn(row.stop, function() { return stopUpdate(row); }));
+            row.update.addEventListener('click', function() { startUpdate(row); });
+            row.stop.addEventListener('click', function() { stopUpdate(row); });
             rows[kind] = row;
             componentGrid.appendChild(E('div', { 'class': 'cbi-section-node' }, [
                 E('h4', {}, componentLabel(kind)),
