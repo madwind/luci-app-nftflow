@@ -7,6 +7,8 @@ TAG=nftflow-update-weekly
 OLD_TAG=nftflow-geodata-weekly
 SOFTWARE=/usr/libexec/nftflow/update.lua
 GEODATA=/usr/libexec/nftflow/geo-update.lua
+CTL=/usr/libexec/nftflow/nftflowctl
+DEFAULT_CONFIG=/usr/share/nftflow/defaults/config.yaml
 SCHEDULE='17 4 * * 0'
 SCHEDULE_MINUTE=17
 SCHEDULE_HOUR=4
@@ -188,11 +190,39 @@ wait_one() {
     return 1
 }
 
+runtime_running() {
+    local raw running
+    raw="$($CTL status 2>/dev/null)" || return 1
+    json_load "$raw" 2>/dev/null || return 1
+    json_get_var running running
+    [ "$running" = 1 ]
+}
+
+preflight_nftflow() {
+    local xray_bin config_file asset_dir
+    xray_bin="$(uci -q get nftflow.main.xray_bin 2>/dev/null || true)"
+    config_file="$(uci -q get nftflow.main.config_file 2>/dev/null || true)"
+    asset_dir="$(uci -q get nftflow.main.asset_dir 2>/dev/null || true)"
+    [ -n "$xray_bin" ] || xray_bin=/usr/bin/xray
+    [ -n "$config_file" ] || config_file=/etc/nftflow/config.yaml
+    [ -n "$asset_dir" ] || asset_dir=/usr/share/xray
+    [ -r "$config_file" ] || config_file="$DEFAULT_CONFIG"
+    [ -x "$xray_bin" ] && [ -r "$config_file" ] || return 1
+    XRAY_LOCATION_ASSET="$asset_dir" "$xray_bin" run -test -format yaml -config "$config_file" >/dev/null 2>&1
+}
+
+finalize_geo() {
+    local action="$1" kind
+    for kind in geoip geosite; do
+        /usr/bin/lua "$GEODATA" "$action" "$kind" >/dev/null 2>&1 || true
+    done
+}
+
 auto_option() { printf '%s_auto_update\n' "$1"; }
 
 run_checks() {
     local kind option result failed=0 did_update=0 was_running=0
-    /etc/init.d/nftflow running >/dev/null 2>&1 && was_running=1
+    runtime_running && was_running=1
 
     for kind in nftflow xray geoip geosite; do
         result="$(check_one "$kind" 2>&1)" || {
@@ -202,7 +232,7 @@ run_checks() {
     done
 
     # Update data first, then Xray, and NftFlow itself last. Component workers
-    # defer service restarts so the whole batch reloads Xray at most once.
+    # defer service restarts so the whole batch validates and reloads Xray once.
     for kind in geoip geosite xray nftflow; do
         option="$(auto_option "$kind")"
         [ "$(flag "$option")" = 1 ] || continue
@@ -220,17 +250,43 @@ run_checks() {
         fi
     done
 
-    if [ "$was_running" = 1 ]; then
-        if [ "$did_update" = 1 ]; then
-            /etc/init.d/nftflow restart >/dev/null 2>&1 || {
-                logger -t nftflow-update 'NftFlow restart after automatic update batch failed'
+    if [ "$did_update" = 1 ]; then
+        if ! preflight_nftflow; then
+            logger -t nftflow-update 'Xray preflight failed after automatic update batch; staged GeoData will be rolled back and NftFlow will not be restarted'
+            finalize_geo rollback
+            failed=1
+            return "$failed"
+        fi
+
+        if [ "$was_running" = 1 ]; then
+            if /etc/init.d/nftflow restart >/dev/null 2>&1; then
+                sleep 2
+            fi
+            if runtime_running; then
+                finalize_geo commit
+            else
+                logger -t nftflow-update 'NftFlow failed to become ready after automatic update batch; stopping retries and rolling back staged GeoData'
+                /etc/init.d/nftflow stop >/dev/null 2>&1 || true
+                finalize_geo rollback
                 failed=1
-            }
-        elif ! /etc/init.d/nftflow running >/dev/null 2>&1; then
+                if preflight_nftflow; then
+                    /etc/init.d/nftflow start >/dev/null 2>&1 || true
+                fi
+            fi
+        else
+            finalize_geo commit
+        fi
+    elif [ "$was_running" = 1 ] && ! runtime_running; then
+        # A failed package replacement may have stopped the service. Restore it
+        # once only; procd's bounded respawn policy handles any further crash.
+        if preflight_nftflow; then
             /etc/init.d/nftflow start >/dev/null 2>&1 || {
                 logger -t nftflow-update 'NftFlow service restoration after failed automatic update failed'
                 failed=1
             }
+        else
+            logger -t nftflow-update 'NftFlow preflight failed after an unsuccessful automatic update; service was left stopped to avoid a respawn loop'
+            failed=1
         fi
     fi
 
