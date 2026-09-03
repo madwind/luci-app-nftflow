@@ -30,7 +30,6 @@
                     "firewall_apply",
                     "routing_save",
                     "routing_apply",
-                    "geo_stop",
                     "update_check",
                     "update_install",
                     "update_stop",
