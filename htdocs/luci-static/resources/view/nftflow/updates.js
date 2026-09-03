@@ -269,33 +269,31 @@ return view.extend({
             if (checkingAll || anyActive()) return Promise.resolve();
             checkingAll = true;
             checkButton.disabled = true;
-            ALL_KINDS.forEach(function(kind) {
-                rows[kind].checking = false;
-                rows[kind].update.disabled = true;
-            });
             setMessage('notice', _('Checking all components...'));
-            var failures = [];
-            var chain = Promise.resolve();
-            ALL_KINDS.forEach(function(kind) {
-                chain = chain.then(function() {
-                    var row = rows[kind];
-                    row.checking = true;
-                    nftflowUi.setState(row.status, 'notice', _('Checking for updates...'));
-                    return callUpdateCheck(kind).then(function(result) {
-                        result = nftflowUi.requireOk(result, _('%s update check failed.').format(componentLabel(kind)));
-                        applyCheckResult(row, result);
-                    }).catch(function(error) {
-                        row.checking = false;
-                        row.updateAvailable = null;
-                        row.update.disabled = true;
-                        failures.push('%s: %s'.format(componentLabel(kind), nftflowUi.errorMessage(error, _('Check failed'))));
-                        nftflowUi.setState(row.status, 'error', nftflowUi.errorMessage(error, _('Check failed')));
-                    });
+
+            var failures = {};
+            var checks = ALL_KINDS.map(function(kind) {
+                var row = rows[kind];
+                row.checking = true;
+                row.update.disabled = true;
+                nftflowUi.setState(row.status, 'notice', _('Checking for updates...'));
+
+                return callUpdateCheck(kind).then(function(result) {
+                    result = nftflowUi.requireOk(result, _('%s update check failed.').format(componentLabel(kind)));
+                    applyCheckResult(row, result);
+                }).catch(function(error) {
+                    row.checking = false;
+                    row.updateAvailable = null;
+                    row.update.disabled = true;
+                    failures[kind] = '%s: %s'.format(componentLabel(kind), nftflowUi.errorMessage(error, _('Check failed')));
+                    nftflowUi.setState(row.status, 'error', nftflowUi.errorMessage(error, _('Check failed')));
                 });
             });
-            return chain.then(function() {
+
+            return Promise.all(checks).then(function() {
                 checkingAll = false;
-                if (failures.length) setMessage('error', failures.join(' · '));
+                var failureMessages = ALL_KINDS.map(function(kind) { return failures[kind]; }).filter(Boolean);
+                if (failureMessages.length) setMessage('error', failureMessages.join(' · '));
                 else setMessage('ok', _('All update checks completed.'));
                 return refresh();
             });
