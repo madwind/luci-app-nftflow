@@ -3,15 +3,14 @@
 USE_PROCD=1
 START=95
 STOP=15
-EXTRA_COMMANDS="install geodata_schedule uninstall"
+EXTRA_COMMANDS="install uninstall"
 EXTRA_HELP="
     install             Prepare runtime files
-    geodata_schedule    Synchronize the weekly GeoData update schedule
     uninstall           Stop NftFlow and remove runtime integration"
 
 NAME=nftflow
 CTL=/usr/libexec/nftflow/nftflowctl
-GEO_AUTO=/usr/libexec/nftflow/geo-auto.sh
+UPDATE_AUTO=/usr/libexec/nftflow/update-auto.sh
 RUNTIME_CONFIG=/var/run/nftflow/config.applied.yaml
 DEFAULT_CONFIG=/usr/share/nftflow/defaults/config.yaml
 GROUP_STATE=/etc/nftflow/groups.created
@@ -25,18 +24,6 @@ load_main() {
     config_get run_gid main run_gid 23333
     config_get run_group main run_group nftflow
     config_get nofile main nofile 65536
-}
-
-install_geodata_schedule() {
-    "$GEO_AUTO" sync >/dev/null 2>&1
-}
-
-geodata_schedule() {
-    install_geodata_schedule
-}
-
-remove_geodata_schedule() {
-    "$GEO_AUTO" remove >/dev/null 2>&1
 }
 
 record_created_group() {
@@ -238,8 +225,10 @@ uninstall() {
     stop >/dev/null 2>&1 || true
     disable 2>/dev/null || true
 
-    remove_geodata_schedule ||
-        logger -t nftflow "cannot remove weekly GeoData update schedule"
+    if [ -x "$UPDATE_AUTO" ]; then
+        "$UPDATE_AUTO" remove >/dev/null 2>&1 ||
+            logger -t nftflow "cannot remove automatic update schedule"
+    fi
 
     "$CTL" cleanup >/dev/null 2>&1 || true
     remove_created_groups
