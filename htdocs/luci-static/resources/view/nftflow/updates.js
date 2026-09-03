@@ -147,7 +147,7 @@ return view.extend({
         function updateButtons(row, operation) {
             var active = activeStatus(operation && operation.status);
             row.active = active;
-            row.update.disabled = row.starting || row.checking || active || checkingAll;
+            row.update.disabled = row.updateLocked || row.starting || row.checking || active || checkingAll;
             if (row.starting || !active) row.stop.disabled = true;
             else if (row.kind === 'xray') row.stop.disabled = true;
             else if (row.kind === 'nftflow' && operation.phase === 'installing') row.stop.disabled = true;
@@ -169,6 +169,8 @@ return view.extend({
             if (component.last_update != null) row.lastUpdateAt = Number(component.last_update) || 0;
             if (row.starting && (activeStatus(operation.status) || [ 'done', 'failed', 'stopped' ].indexOf(operation.status) >= 0))
                 row.starting = false;
+            if (row.updateLocked && [ 'done', 'failed', 'stopped' ].indexOf(operation.status) >= 0)
+                row.updateLocked = false;
             renderVersion(row);
             renderHistory(row);
 
@@ -199,7 +201,8 @@ return view.extend({
                 lastUpdateAt: 0,
                 checking: false,
                 starting: false,
-                active: false
+                active: false,
+                updateLocked: false
             };
             row.history.hidden = true;
             row.auto.addEventListener('change', function() { setAuto(row); });
@@ -344,6 +347,7 @@ return view.extend({
                 return refresh();
             }).catch(function(error) {
                 row.starting = false;
+                row.updateLocked = false;
                 updateButtons(row, {});
                 setMessage('error', nftflowUi.errorMessage(error, _('%s update could not start.').format(componentLabel(row.kind))));
                 return refresh();
@@ -351,9 +355,8 @@ return view.extend({
         }
 
         function startUpdate(row) {
-            if (checkingAll || row.starting || row.checking || row.active) return Promise.resolve();
-            if (row.updateAvailable === true) return installUpdate(row);
-
+            if (checkingAll || row.updateLocked || row.starting || row.checking || row.active) return Promise.resolve();
+            row.updateLocked = true;
             row.checking = true;
             updateButtons(row, {});
             nftflowUi.setState(row.status, 'notice', _('Checking for updates...'));
@@ -363,10 +366,13 @@ return view.extend({
                 result = nftflowUi.requireOk(result, _('%s update check failed.').format(componentLabel(row.kind)));
                 applyCheckResult(row, result);
                 if (row.updateAvailable === true) return installUpdate(row);
+                row.updateLocked = false;
+                updateButtons(row, {});
                 setMessage('ok', _('%s is already up to date.').format(componentLabel(row.kind)));
                 return false;
             }).catch(function(error) {
                 row.checking = false;
+                row.updateLocked = false;
                 row.updateAvailable = null;
                 updateButtons(row, {});
                 nftflowUi.setState(row.status, 'error', nftflowUi.errorMessage(error, _('Check failed')));
@@ -440,7 +446,7 @@ return view.extend({
         return E('div', { 'class': 'cbi-map', 'id': 'nftflow-updates' }, [
             layoutStyle,
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Updates')),
-            E('div', { 'class': 'cbi-map-descr' }, _('Update installs a known newer version immediately, or checks that component first when no update is known.')),
+            E('div', { 'class': 'cbi-map-descr' }, _('Update always checks that component for a newer version first, then installs it when available.')),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Update checks')),
                 valueRow(_('Automatic update checks'), E('label', {}, [ checkEnabled, ' ', scheduleText ])),
