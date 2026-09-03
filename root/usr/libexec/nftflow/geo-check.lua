@@ -55,7 +55,7 @@ local function valid_cached(url)
     local stat=nixio_fs.stat(path)
     if type(stat)~="table" or os.time()-(tonumber(stat.mtime) or 0)>CACHE_TTL then return nil end
     local value=decode(read_file(path) or "")
-    if type(value)~="table" or value.url~=url or not value.remote_version or not value.download_url then return nil end
+    if type(value)~="table" or value.url~=url or not value.remote_version or not value.download_url or not value.checksum_url then return nil end
     value.cache_hit=true
     return value
 end
@@ -94,7 +94,15 @@ local function probe_remote(url)
         return {ok=false,url=url,error="unable to determine GeoData release version or pinned download URL"}
     end
 
-    local value={ok=true,url=url,remote_version=remote,download_url=download_url,checked=os.time(),cache_hit=false}
+    local value={
+        ok=true,
+        url=url,
+        remote_version=remote,
+        download_url=download_url,
+        checksum_url=download_url..".sha256sum",
+        checked=os.time(),
+        cache_hit=false
+    }
     local tmp=path.."."..tostring(os.time()).."."..tostring(math.random(1000,9999))
     if write_file(tmp,encode(value).."\n") then exec_quiet("chmod 0644 "..q(tmp)); os.rename(tmp,path) else os.remove(tmp) end
     exec_quiet("rmdir "..q(lock))
@@ -125,6 +133,7 @@ else
             local_version=local_version,
             remote_version=remote.remote_version,
             download_url=remote.download_url,
+            checksum_url=remote.checksum_url,
             update_available=(not local_version) or remote.remote_version~=local_version,
             cache_hit=remote.cache_hit==true
         }
