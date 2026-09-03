@@ -14,6 +14,7 @@ local CANDIDATE = RUNTIME .. "/firewall.candidate.nft"
 local APPLIED_SOURCE = RUNTIME .. "/firewall.applied.nft"
 local APPLIED_COMPILED = RUNTIME .. "/firewall.applied.compiled.nft"
 local EDITOR_MAX_BYTES = 32 * 1024
+local GEOIP_ELEMENT_BATCH_SIZE = 256
 local OWNED_TABLE = "nftflow"
 local temporary_sequence = 0
 
@@ -159,11 +160,14 @@ end
 
 local function append_geoip_elements(output, order)
     for _, bucket in ipairs(order) do
-        if #bucket.values > 0 then
+        for first = 1, #bucket.values, GEOIP_ELEMENT_BATCH_SIZE do
+            local values = {}
+            local last = math.min(first + GEOIP_ELEMENT_BATCH_SIZE - 1, #bucket.values)
+            for index = first, last do values[#values + 1] = bucket.values[index] end
             output[#output + 1] = string.format(
                 "\nadd element %s %s %s { %s }\n",
                 bucket.spec.table_family, bucket.spec.table_name, bucket.spec.name,
-                table.concat(bucket.values, ", ")
+                table.concat(values, ", ")
             )
         end
     end
