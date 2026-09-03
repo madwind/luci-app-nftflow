@@ -76,12 +76,17 @@ local function rule_present(s)
         end
     end; return false
 end
+local function normalize_prefix(family,prefix)
+    if prefix=="default" then return family=="4" and "0.0.0.0/0" or "::/0" end
+    return prefix
+end
 local function route_state(s)
     local ok,out=run("ip -"..s.family.." route show table "..s.table); if not ok then return false,false end
     local exact,conflict=false,false
+    local expected=normalize_prefix(s.family,s.prefix)
     for line in (out.."\n"):gmatch("(.-)\n") do
         line=trim(line); local kind,prefix=line:match("^(%S+)%s+(%S+)")
-        if prefix==s.prefix then if kind=="local" and line:match("%sdev%s+lo") then exact=true else conflict=true end end
+        if normalize_prefix(s.family,prefix)==expected then if kind=="local" and line:match("%sdev%s+lo") then exact=true else conflict=true end end
     end; return exact,conflict
 end
 local function active(s) local r=route_state(s); return r==true and rule_present(s) end
