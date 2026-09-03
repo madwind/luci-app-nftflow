@@ -158,7 +158,7 @@ local function worker(kind)
         s.phase="restarting"; s.message="Restarting NftFlow once to load updated GeoData"; save(kind,s)
         local restarted=quiet("/etc/init.d/nftflow restart")
         if not restarted or not wait_nftflow_running() then
-            /etc/init.d/nftflow stop >/dev/null 2>&1
+            quiet("/etc/init.d/nftflow stop")
             local restored,restore_error=restore_local(kind,a,backup,had_previous,old_version,s)
             if restored then
                 local recovered=quiet("/etc/init.d/nftflow start") and wait_nftflow_running()
