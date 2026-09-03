@@ -276,12 +276,23 @@ local function verify_installed(kind, state, expected)
     state.post_check_error = "Unable to compare the installed version after update."; return false
 end
 
+local function append_post_error(state, message)
+    if not message or message == "" then return end
+    if state.post_check_error and state.post_check_error ~= "" then
+        state.post_check_error = state.post_check_error .. " " .. message
+    else
+        state.post_check_error = message
+    end
+end
+
 local function done_worker(kind, state, message)
     state.ok = true; state.status = "done"; state.phase = "done"; state.finished = os.time(); state.updated = true; state.last_update = state.finished; state.error = nil; state.message = message; state.pid = nil; save_state(kind, state); remove_lock(kind); return state
 end
 
 local function worker_nftflow(state)
     if not state.download_url or not state.sha256 or not state.latest_version then return fail_worker("nftflow", state, "cached NftFlow check data is incomplete; check updates again") end
+    local defer_restart = os.getenv("NFTFLOW_DEFER_RESTART") == "1"
+    local was_running = exec_quiet("/etc/init.d/nftflow running")
     local package_path = temporary_path(UPDATE_DIR .. "/" .. (state.asset or "luci-app-nftflow.apk"))
     set_phase("nftflow", state, "downloading", "Downloading checked NftFlow package")
     local ok, err = fetch_file(state.download_url, package_path)
@@ -290,11 +301,23 @@ local function worker_nftflow(state)
     local hash_ok, hash_output = exec_capture("sha256sum " .. shellquote(package_path))
     local actual = hash_ok and tostring(hash_output):match("^([0-9A-Fa-f]+)") or nil
     if not actual or actual:lower() ~= tostring(state.sha256):lower() then os.remove(package_path); return fail_worker("nftflow", state, "NftFlow SHA256 verification failed") end
+    local simulate_ok, simulate_output = exec_capture("apk --network=no add --allow-untrusted --simulate --upgrade " .. shellquote(package_path))
+    if not simulate_ok then os.remove(package_path); return fail_worker("nftflow", state, "NftFlow package cannot be installed offline after download: " .. compact_error(simulate_output)) end
+
     set_phase("nftflow", state, "installing", "Installing NftFlow package")
-    local install_ok, install_output = exec_capture("apk add --allow-untrusted --upgrade " .. shellquote(package_path))
+    if was_running and not defer_restart and not exec_quiet("/etc/init.d/nftflow stop") then
+        os.remove(package_path)
+        return fail_worker("nftflow", state, "Unable to stop NftFlow before package installation")
+    end
+    local install_ok, install_output = exec_capture("apk --network=no add --allow-untrusted --upgrade " .. shellquote(package_path))
     os.remove(package_path)
+    if was_running and not defer_restart then
+        if not exec_quiet("/etc/init.d/nftflow start") then append_post_error(state, "NftFlow did not restart after package installation.") end
+    end
     if not install_ok then return fail_worker("nftflow", state, "NftFlow installation failed: " .. compact_error(install_output)) end
+    local restart_error = state.post_check_error
     verify_installed("nftflow", state, state.latest_version)
+    if restart_error then append_post_error(state, restart_error) end
     return done_worker("nftflow", state, "NftFlow updated successfully")
 end
 
@@ -303,12 +326,35 @@ local function worker_xray(state)
     if not expected then return fail_worker("xray", state, "cached Xray check data is incomplete; check updates again") end
     local defer_restart = os.getenv("NFTFLOW_DEFER_RESTART") == "1"
     local was_running = exec_quiet("/etc/init.d/nftflow running")
-    if was_running and not defer_restart then exec_quiet("/etc/init.d/nftflow stop") end
+    local download_dir = temporary_path(UPDATE_DIR .. "/xray")
+    if not mkdirp(download_dir) then return fail_worker("xray", state, "cannot create xray-core download directory") end
+
+    set_phase("xray", state, "downloading", "Downloading checked xray-core version")
+    local constraint = PACKAGES.xray .. "=" .. expected
+    local fetch_ok, fetch_output = exec_capture("apk fetch --output " .. shellquote(download_dir) .. " " .. shellquote(constraint))
+    if not fetch_ok then exec_quiet("rm -rf " .. shellquote(download_dir)); return fail_worker("xray", state, "xray-core download failed: " .. compact_error(fetch_output)) end
+    local find_ok, find_output = exec_capture("find " .. shellquote(download_dir) .. " -maxdepth 1 -type f -name " .. shellquote(PACKAGES.xray .. "-*.apk") .. " -print")
+    local package_path = find_ok and trim(find_output):match("([^\r\n]+)") or nil
+    if not package_path then exec_quiet("rm -rf " .. shellquote(download_dir)); return fail_worker("xray", state, "downloaded xray-core package was not found") end
+
+    set_phase("xray", state, "verifying", "Verifying xray-core package and offline dependencies")
+    local simulate_ok, simulate_output = exec_capture("apk --network=no add --simulate --upgrade " .. shellquote(package_path))
+    if not simulate_ok then exec_quiet("rm -rf " .. shellquote(download_dir)); return fail_worker("xray", state, "xray-core package cannot be installed offline after download: " .. compact_error(simulate_output)) end
+
     set_phase("xray", state, "installing", "Installing checked xray-core version")
-    local ok, output = exec_capture("apk add --upgrade " .. shellquote(PACKAGES.xray .. "=" .. expected))
-    if was_running and not defer_restart then exec_quiet("/etc/init.d/nftflow start") end
+    if was_running and not defer_restart and not exec_quiet("/etc/init.d/nftflow stop") then
+        exec_quiet("rm -rf " .. shellquote(download_dir))
+        return fail_worker("xray", state, "Unable to stop NftFlow before xray-core installation")
+    end
+    local ok, output = exec_capture("apk --network=no add --upgrade " .. shellquote(package_path))
+    exec_quiet("rm -rf " .. shellquote(download_dir))
+    if was_running and not defer_restart then
+        if not exec_quiet("/etc/init.d/nftflow start") then append_post_error(state, "NftFlow did not restart after xray-core installation.") end
+    end
     if not ok then return fail_worker("xray", state, "xray-core installation failed: " .. compact_error(output)) end
+    local restart_error = state.post_check_error
     verify_installed("xray", state, expected)
+    if restart_error then append_post_error(state, restart_error) end
     return done_worker("xray", state, "Xray Core updated successfully")
 end
 
