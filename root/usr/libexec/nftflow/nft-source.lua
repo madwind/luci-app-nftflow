@@ -155,27 +155,17 @@ function M.inspect(raw, owned_table)
     return parsed
 end
 
-function M.macro_sets(source, owned_table)
-    if not source or source == "" then return {} end
-    local parsed = M.inspect(source, owned_table)
-    if not parsed then return {} end
-    local result = {}
-    for _, set_spec in ipairs(parsed.sets) do
-        if set_spec.has_geoip_macro then result[set_spec.key] = set_spec end
-    end
-    return result
+function M.macro_sets()
+    return {}
 end
 
-function M.fold_runtime(runtime, source_sets)
-    source_sets = source_sets or {}
+function M.fold_runtime(runtime)
     local parsed = M.parse(runtime)
     if not parsed then return runtime end
     local replacements = {}
     for _, set_spec in ipairs(parsed.sets) do
-        local source = source_sets[set_spec.key]
         local element_count = set_spec.elements_body ~= nil and count_elements(set_spec.elements_body) or 0
-        local from_macro = source and source.elements_body ~= nil
-        if set_spec.elements_open and (from_macro or element_count > RUNTIME_ELEMENT_FOLD_THRESHOLD) then
+        if set_spec.elements_open and element_count > RUNTIME_ELEMENT_FOLD_THRESHOLD then
             replacements[#replacements + 1] = {
                 start_position = set_spec.elements_open + 1,
                 finish_position = set_spec.elements_close - 1,
