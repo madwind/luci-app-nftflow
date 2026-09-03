@@ -139,9 +139,19 @@ return view.extend({
         }
 
         function formatConfig(current) {
-            current.setValue(nftflowYamlFormat.format(current.getValue()));
+            var value = current.getValue();
+            var formatted = nftflowYamlFormat.format(value);
+
             updateGeoWarning(current);
             current.focus();
+
+            if (formatted === value) {
+                setMessage('notice', _('YAML is already formatted.'));
+                return Promise.resolve(false);
+            }
+
+            current.setValue(formatted);
+            updateGeoWarning(current);
             setMessage('ok', _('YAML formatted in the editor. Review before applying.'));
             return Promise.resolve(true);
         }
@@ -182,7 +192,7 @@ return view.extend({
             return callConfigDefault().then(function(next) {
                 return nftflowUi.requireOk(next, _('Unable to read the default Xray YAML template.'));
             }).then(function(next) {
-                current.setValue(next.config || '');
+                current.setValue(nftflowYamlFormat.format(next.config || ''));
                 updateGeoWarning(current);
                 current.focus();
                 setMessage('notice', _('Default Xray YAML template loaded in the editor. Review before applying.'));
