@@ -167,6 +167,8 @@ return view.extend({
                 row.updateAvailable = component.update_available === true;
             if (component.checked != null) row.checkedAt = Number(component.checked) || 0;
             if (component.last_update != null) row.lastUpdateAt = Number(component.last_update) || 0;
+            if (row.starting && (activeStatus(operation.status) || [ 'done', 'failed', 'stopped' ].indexOf(operation.status) >= 0))
+                row.starting = false;
             renderVersion(row);
             renderHistory(row);
 
@@ -336,7 +338,6 @@ return view.extend({
 
             return callUpdateInstall(row.kind).then(function(result) {
                 result = nftflowUi.requireOk(result, _('%s update could not start.').format(componentLabel(row.kind)));
-                row.starting = false;
                 nftflowUi.setState(row.status, 'notice', phaseText(result));
                 updateButtons(row, result);
                 setMessage('notice', _('%s update started.').format(componentLabel(row.kind)));
