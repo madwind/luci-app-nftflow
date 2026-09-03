@@ -326,19 +326,17 @@ local function worker_xray(state)
     if not expected then return fail_worker("xray", state, "cached Xray check data is incomplete; check updates again") end
     local defer_restart = os.getenv("NFTFLOW_DEFER_RESTART") == "1"
     local was_running = exec_quiet("/etc/init.d/nftflow running")
-    local download_dir = temporary_path(UPDATE_DIR .. "/xray")
+    local download_dir = temporary_path(UPDATE_DIR .. "/xray-cache")
     if not mkdirp(download_dir) then return fail_worker("xray", state, "cannot create xray-core download directory") end
 
-    set_phase("xray", state, "downloading", "Downloading checked xray-core version")
     local constraint = PACKAGES.xray .. "=" .. expected
+    set_phase("xray", state, "downloading", "Downloading checked xray-core version")
     local fetch_ok, fetch_output = exec_capture("apk fetch --output " .. shellquote(download_dir) .. " " .. shellquote(constraint))
     if not fetch_ok then exec_quiet("rm -rf " .. shellquote(download_dir)); return fail_worker("xray", state, "xray-core download failed: " .. compact_error(fetch_output)) end
-    local find_ok, find_output = exec_capture("find " .. shellquote(download_dir) .. " -maxdepth 1 -type f -name " .. shellquote(PACKAGES.xray .. "-*.apk") .. " -print")
-    local package_path = find_ok and trim(find_output):match("([^\r\n]+)") or nil
-    if not package_path then exec_quiet("rm -rf " .. shellquote(download_dir)); return fail_worker("xray", state, "downloaded xray-core package was not found") end
 
     set_phase("xray", state, "verifying", "Verifying xray-core package and offline dependencies")
-    local simulate_ok, simulate_output = exec_capture("apk --network=no add --simulate --upgrade " .. shellquote(package_path))
+    local cache_option = "--cache-dir " .. shellquote(download_dir)
+    local simulate_ok, simulate_output = exec_capture("apk " .. cache_option .. " --network=no add --simulate --upgrade " .. shellquote(constraint))
     if not simulate_ok then exec_quiet("rm -rf " .. shellquote(download_dir)); return fail_worker("xray", state, "xray-core package cannot be installed offline after download: " .. compact_error(simulate_output)) end
 
     set_phase("xray", state, "installing", "Installing checked xray-core version")
@@ -346,7 +344,7 @@ local function worker_xray(state)
         exec_quiet("rm -rf " .. shellquote(download_dir))
         return fail_worker("xray", state, "Unable to stop NftFlow before xray-core installation")
     end
-    local ok, output = exec_capture("apk --network=no add --upgrade " .. shellquote(package_path))
+    local ok, output = exec_capture("apk " .. cache_option .. " --network=no add --upgrade " .. shellquote(constraint))
     exec_quiet("rm -rf " .. shellquote(download_dir))
     if was_running and not defer_restart then
         if not exec_quiet("/etc/init.d/nftflow start") then append_post_error(state, "NftFlow did not restart after xray-core installation.") end
