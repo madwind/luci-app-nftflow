@@ -301,11 +301,12 @@ end
 local function worker_xray(state)
     local expected = state.latest_version
     if not expected then return fail_worker("xray", state, "cached Xray check data is incomplete; check updates again") end
+    local defer_restart = os.getenv("NFTFLOW_DEFER_RESTART") == "1"
     local was_running = exec_quiet("/etc/init.d/nftflow running")
-    if was_running then exec_quiet("/etc/init.d/nftflow stop") end
+    if was_running and not defer_restart then exec_quiet("/etc/init.d/nftflow stop") end
     set_phase("xray", state, "installing", "Installing checked xray-core version")
     local ok, output = exec_capture("apk add --upgrade " .. shellquote(PACKAGES.xray .. "=" .. expected))
-    if was_running then exec_quiet("/etc/init.d/nftflow start") end
+    if was_running and not defer_restart then exec_quiet("/etc/init.d/nftflow start") end
     if not ok then return fail_worker("xray", state, "xray-core installation failed: " .. compact_error(output)) end
     verify_installed("xray", state, expected)
     return done_worker("xray", state, "Xray Core updated successfully")
