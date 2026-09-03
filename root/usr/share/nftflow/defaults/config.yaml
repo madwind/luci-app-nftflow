@@ -119,6 +119,8 @@ outbounds:
       xhttpSettings:
         path: /path
         mode: stream-one
+      sockopt:
+        domainStrategy: UseIP
 
   - tag: dns-handler
     protocol: dns
