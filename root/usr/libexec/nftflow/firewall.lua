@@ -9,6 +9,7 @@ local nft_source = dofile "/usr/libexec/nftflow/nft-source.lua"
 
 local RUNTIME = "/var/run/nftflow"
 local FIREWALL_SOURCE = "/etc/nftflow/firewall.nft"
+local FIREWALL_DEFAULT = "/usr/share/nftflow/defaults/firewall.nft"
 local CANDIDATE = RUNTIME .. "/firewall.candidate.nft"
 local APPLIED_SOURCE = RUNTIME .. "/firewall.applied.nft"
 local APPLIED_COMPILED = RUNTIME .. "/firewall.applied.compiled.nft"
@@ -321,12 +322,24 @@ end
 
 local function read()
     local source = read_file(FIREWALL_SOURCE)
-    if source == nil then return { ok = false, error = "cannot read " .. FIREWALL_SOURCE, path = FIREWALL_SOURCE } end
+    local using_default = false
+    if source == nil then
+        source = read_file(FIREWALL_DEFAULT)
+        using_default = true
+    end
+    if source == nil then
+        return {
+            ok = false,
+            error = "cannot read " .. FIREWALL_SOURCE .. " or " .. FIREWALL_DEFAULT,
+            path = FIREWALL_SOURCE
+        }
+    end
+
     local applied_source = read_file(APPLIED_SOURCE)
     local runtime_tables = managed_tables()
-    local active, found, missing, count = active_firewall(runtime_tables, applied_source, true)
+    local active, found, missing, count = active_firewall(runtime_tables, applied_source or source, true)
     return {
-        ok = true, config = source, path = FIREWALL_SOURCE, bytes = #source,
+        ok = true, config = source, path = FIREWALL_SOURCE, bytes = #source, using_default = using_default,
         active = active, active_found = found, missing_tables = missing,
         table_count = #runtime_tables, active_table_count = count,
         applied = applied_source ~= nil, applied_config = applied_source or "",
