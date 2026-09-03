@@ -29,10 +29,6 @@ function activeStatus(status) {
     return [ 'starting', 'running', 'stopping' ].indexOf(status) >= 0;
 }
 
-function terminalStatus(status) {
-    return [ 'done', 'failed', 'stopped' ].indexOf(status) >= 0;
-}
-
 function phaseText(operation) {
     var phase = operation && (operation.phase || operation.status) || '';
     if (phase === 'downloading') return _('Downloading...');
@@ -147,7 +143,8 @@ return view.extend({
             if (component.installed_version) row.installedVersion = String(component.installed_version);
             if (component.local_version) row.installedVersion = String(component.local_version);
             if (component.latest_version) row.latestVersion = String(component.latest_version);
-            if (component.update_available !== undefined && component.update_available !== null)
+            if (component.check_ok === false) row.updateAvailable = null;
+            else if (component.update_available !== undefined && component.update_available !== null)
                 row.updateAvailable = component.update_available === true;
             if (component.checked != null) row.checkedAt = Number(component.checked) || 0;
             if (component.last_update != null) row.lastUpdateAt = Number(component.last_update) || 0;
@@ -289,6 +286,8 @@ return view.extend({
                         applyCheckResult(row, result);
                     }).catch(function(error) {
                         row.checking = false;
+                        row.updateAvailable = null;
+                        row.update.disabled = true;
                         failures.push('%s: %s'.format(componentLabel(kind), nftflowUi.errorMessage(error, _('Check failed'))));
                         nftflowUi.setState(row.status, 'error', nftflowUi.errorMessage(error, _('Check failed')));
                     });
