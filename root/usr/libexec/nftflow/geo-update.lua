@@ -187,15 +187,6 @@ local function start(kind)
     s.pid=pid; save(kind,s); return s
 end
 
-local function normalize(kind,s)
-    if (s.status=="starting" or s.status=="running" or s.status=="stopping") and s.pid and not alive(s.pid) then s.ok=false; s.status="failed"; s.phase="failed"; s.finished=os.time(); s.pid=nil; s.updated=false; s.error="GeoData update worker exited unexpectedly"; save(kind,s); unlock(kind) end
-    return s
-end
-local function status()
-    local assets={}; for _,kind in ipairs({"geoip","geosite"}) do local s=normalize(kind,load(kind)); assets[kind]={kind=kind,local_version=s.local_version or s.source_version,checked=tonumber(s.checked),check_ok=s.check_ok,latest_version=s.latest_version,update_available=s.update_available,last_check_error=s.last_check_error,last_update=last_update(s),post_check_error=s.post_check_error,update=s} end
-    return {ok=true,assets=assets}
-end
-
 local command=arg[1] or ""; local r
-if command=="check" then r=check(arg[2]) elseif command=="start" then r=start(arg[2]) elseif command=="worker" then r=worker(arg[2]) elseif command=="status" then r=status() else r={ok=false,error="unknown GeoData update command"} end
+if command=="check" then r=check(arg[2]) elseif command=="start" then r=start(arg[2]) elseif command=="worker" then r=worker(arg[2]) else r={ok=false,error="unknown GeoData update command"} end
 io.write(enc(r).."\n"); os.exit(r.ok==false and 1 or 0)
