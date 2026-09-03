@@ -72,6 +72,8 @@ end
 
 local function worker(kind)
     local a=cfg(kind); if not a then return {ok=false,kind=kind,error="unsupported GeoData kind"} end
+    local defer_restart=os.getenv("NFTFLOW_DEFER_RESTART")=="1"
+    local was_running=not defer_restart and quiet("/etc/init.d/nftflow running")
     local s=load(kind); s.pid=nixio.getpid(); s.status="running"; s.phase="starting"; save(kind,s)
     if s.check_ok~=true or s.update_available~=true or not s.latest_version or not s.download_url then return fail(kind,s,"no checked GeoData update is available; check updates first") end
     if not mkdir(dirname(a.path)) then return fail(kind,s,"cannot create "..dirname(a.path)) end
@@ -85,8 +87,10 @@ local function worker(kind)
     stat=fs.stat(a.path); if type(stat)~="table" or (tonumber(stat.size) or 0)<1024 then return fail(kind,s,"installed GeoData file failed local verification") end
     local persisted,err=version.write(kind,expected); if not persisted then return fail(kind,s,err or "cannot persist installed GeoData version") end
     if version.read(kind)~=expected then return fail(kind,s,"installed GeoData version metadata failed local verification") end
+    local restart_error=nil
+    if was_running and not quiet("/etc/init.d/nftflow restart") then restart_error="GeoData updated, but NftFlow restart failed." end
     s.ok=true; s.status="done"; s.phase="done"; s.finished=os.time(); s.pid=nil; s.updated=true; s.local_version=expected; s.source_version=expected; s.latest_version=expected
-    s.update_available=false; s.last_update=s.finished; s.post_check_error=nil; s.error=nil; s.message=kind.." updated successfully"; save(kind,s); unlock(kind); return s
+    s.update_available=false; s.last_update=s.finished; s.post_check_error=restart_error; s.error=nil; s.message=kind.." updated successfully"; save(kind,s); unlock(kind); return s
 end
 
 local function start(kind)
