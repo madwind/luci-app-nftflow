@@ -4,6 +4,7 @@
 
 CRONTAB=/etc/crontabs/root
 TAG=nftflow-update-weekly
+OLD_TAG=nftflow-geodata-weekly
 SOFTWARE=/usr/libexec/nftflow/update.lua
 GEODATA=/usr/libexec/nftflow/geo-update.lua
 SCHEDULE='17 4 * * 0'
@@ -19,16 +20,20 @@ reload_cron() {
     /etc/init.d/cron reload >/dev/null 2>&1 || /etc/init.d/cron restart >/dev/null 2>&1 || true
 }
 
-remove_schedule() {
+clear_schedule_lines() {
     [ -f "$CRONTAB" ] || return 0
-    sed -i "/$TAG/d" "$CRONTAB" || return 1
+    sed -i "/$TAG/d;/$OLD_TAG/d" "$CRONTAB"
+}
+
+remove_schedule() {
+    clear_schedule_lines || return 1
     reload_cron
 }
 
 sync_schedule() {
     mkdir -p /etc/crontabs || return 1
     touch "$CRONTAB" || return 1
-    sed -i "/$TAG/d" "$CRONTAB" || return 1
+    clear_schedule_lines || return 1
     if [ "$(flag update_check_enabled)" = 1 ]; then
         printf '%s\n' "$SCHEDULE $0 run >/dev/null 2>&1 # $TAG" >>"$CRONTAB" || return 1
     fi
@@ -72,14 +77,15 @@ state_path() {
     esac
 }
 
-is_available() {
-    local path raw available
+checked_update_available() {
+    local path raw available check_ok
     path="$(state_path "$1")"
     [ -s "$path" ] || return 1
     raw="$(cat "$path" 2>/dev/null)" || return 1
     json_load "$raw" 2>/dev/null || return 1
+    json_get_var check_ok check_ok
     json_get_var available update_available
-    [ "$available" = 1 ]
+    [ "$check_ok" = 1 ] && [ "$available" = 1 ]
 }
 
 start_one() {
@@ -122,7 +128,7 @@ run_checks() {
     for kind in geoip geosite xray nftflow; do
         option="$(auto_option "$kind")"
         [ "$(flag "$option")" = 1 ] || continue
-        is_available "$kind" || continue
+        checked_update_available "$kind" || continue
         result="$(start_one "$kind" 2>&1)" || {
             logger -t nftflow-update "$kind automatic update could not start: $result"
             failed=1
