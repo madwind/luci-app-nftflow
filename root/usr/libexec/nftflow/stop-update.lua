@@ -141,15 +141,6 @@ local function terminate_tree(pid)
     return not any_alive(pid, children)
 end
 
-local function cleanup_temporary(mode, pid)
-    if mode == "geo" then
-        exec_quiet("rm -f " .. RUNTIME .. "/geo-fetch-result.tmp." .. tostring(pid) .. ".* " ..
-            RUNTIME .. "/geo-fetch-error.tmp." .. tostring(pid) .. ".*")
-    else
-        exec_quiet("rm -f " .. SOFTWARE_DIR .. "/*.tmp." .. tostring(pid) .. ".*")
-    end
-end
-
 local function stop(kind)
     local info = paths(kind)
     if not info then return { ok = false, kind = kind, error = "unsupported update kind" } end
@@ -188,7 +179,6 @@ local function stop(kind)
         return state
     end
 
-    cleanup_temporary(info.mode, pid)
     exec_quiet("rmdir " .. shellquote(info.lock))
 
     state.ok = true
