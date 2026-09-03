@@ -14,10 +14,10 @@
                     "config_read",
                     "config_validate",
                     "geo_status",
-                    "update_status"
+                    "update_status",
+                    "update_settings"
                 ],
-                "luci.nftflow.defaults": [ "firewall", "config", "routing" ],
-                "luci.nftflow.geoops": [ "status" ]
+                "luci.nftflow.defaults": [ "firewall", "config", "routing" ]
             }
         },
         "write": {
@@ -31,12 +31,14 @@
                     "routing_save",
                     "routing_apply",
                     "geo_stop",
+                    "update_check",
                     "update_install",
                     "update_stop",
+                    "update_set_check",
+                    "update_set_auto",
                     "action",
                     "service_sync"
-                ],
-                "luci.nftflow.geoops": [ "set_auto", "update" ]
+                ]
             }
         }
     }
