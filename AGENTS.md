@@ -8,4 +8,4 @@
 - Use native LuCI UI components whenever possible.
 - Follow OpenWrt best practices.
 - Use LF line endings for all files.
-- Load GeoIP sets with separate `nft` invocations of at most 256 elements each; never combine batches in one `nft -f` call.
+- Keep GeoIP set population as one `add element` command per set.
