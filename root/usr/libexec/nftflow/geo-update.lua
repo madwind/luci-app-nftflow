@@ -11,6 +11,7 @@ local RUNTIME="/var/run/nftflow"
 local LOG_DIR="/var/log/nftflow"
 local FETCH="/bin/uclient-fetch"
 local CHECKER="/usr/libexec/nftflow/geo-check.lua"
+local CTL="/usr/libexec/nftflow/nftflowctl"
 local GEOIP="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"
 local GEOSITE="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
 local seq=0
@@ -39,6 +40,7 @@ end
 local function dirname(path) return tostring(path):match("^(.*)/[^/]*$") or "." end
 local function state_path(kind) return RUNTIME.."/geo-update-"..kind..".json" end
 local function lock_path(kind) return RUNTIME.."/geo-update-"..kind..".lock" end
+local function backup_path(a) return a.path..".nftflow-update-backup" end
 local function ready(kind) local a=cfg(kind); local s=a and fs.stat(a.path); return type(s)=="table" and (tonumber(s.size) or 0)>=1024 end
 local function load(kind)
     local s=dec(read(state_path(kind)) or ""); if type(s)~="table" then s={kind=kind,status="idle"} end; s.kind=kind
@@ -52,15 +54,54 @@ local function unlock(kind) quiet("rmdir "..q(lock_path(kind))) end
 local function last_update(s) return tonumber(s.last_update) or (s.updated==true and tonumber(s.finished) or nil) end
 local function result_from(output) local last; for line in tostring(output or ""):gmatch("[^\r\n]+") do if trim(line)~="" then last=trim(line) end end return last and dec(last) or nil end
 
+local function clear_rollback(s)
+    s.rollback_pending=nil; s.rollback_path=nil; s.rollback_had_previous=nil; s.rollback_version=nil; s.rollback_last_update=nil
+end
+
+local function rollback_asset(kind,a,s)
+    if s.rollback_pending~=true then return true end
+    local backup=s.rollback_path or backup_path(a)
+    if s.rollback_had_previous==true then
+        local stat=fs.stat(backup)
+        if type(stat)~="table" then return false,"GeoData rollback backup is missing" end
+        os.remove(a.path)
+        if not os.rename(backup,a.path) then return false,"cannot restore previous GeoData file" end
+        quiet("chmod 0644 "..q(a.path))
+    else
+        os.remove(a.path)
+        os.remove(backup)
+    end
+    local restored,err=version.write(kind,s.rollback_version or "")
+    if not restored then return false,err or "cannot restore previous GeoData version" end
+    s.local_version=s.rollback_version; s.source_version=s.rollback_version; s.last_update=tonumber(s.rollback_last_update)
+    clear_rollback(s)
+    return true
+end
+
+local function commit_asset(a,s)
+    if s.rollback_pending==true then os.remove(s.rollback_path or backup_path(a)) end
+    clear_rollback(s)
+    return true
+end
+
+local function nftflow_running()
+    local ok,out=run(q(CTL).." status")
+    local r=result_from(out)
+    return ok and type(r)=="table" and r.ok==true and r.running==true
+end
+
 local function check(kind)
-    if not cfg(kind) then return {ok=false,kind=kind,error="unsupported GeoData kind"} end
+    local a=cfg(kind)
+    if not a then return {ok=false,kind=kind,error="unsupported GeoData kind"} end
     if not mkdir(RUNTIME) then return {ok=false,kind=kind,error="cannot create GeoData runtime directory"} end
-    local s=load(kind); if active(s) then return {ok=false,kind=kind,error="a GeoData update is already in progress"} end
+    local s=load(kind)
+    if active(s) then return {ok=false,kind=kind,error="a GeoData update is already in progress"} end
+    if s.rollback_pending==true then return {ok=false,kind=kind,error="a GeoData update is awaiting batch finalization"} end
     local ok,out=run("/usr/bin/lua "..q(CHECKER).." "..q(kind)); local r=result_from(out)
     if type(r)~="table" then r={ok=false,kind=kind,error=ok and "GeoData checker returned invalid JSON" or trim(out)} end
     s.status="idle"; s.phase=nil; s.progress=nil; s.error=nil; s.updated=false; s.checked=os.time(); s.check_ok=r.ok==true; s.last_update=last_update(s)
     if r.ok==true then
-        s.local_version=r.local_version; s.source_version=r.local_version; s.latest_version=r.remote_version; s.download_url=r.download_url; s.source_url=r.url
+        s.local_version=r.local_version; s.source_version=r.local_version; s.latest_version=r.remote_version; s.download_url=r.download_url; s.checksum_url=r.checksum_url; s.source_url=r.url
         s.update_available=r.update_available==true; s.cache_hit=r.cache_hit==true; s.last_check_error=nil
     else s.last_check_error=r.error or "GeoData check failed" end
     save(kind,s); r.checked=s.checked; r.check_ok=s.check_ok; r.last_check_error=s.last_check_error; r.last_update=s.last_update; return r
@@ -73,31 +114,111 @@ end
 local function worker(kind)
     local a=cfg(kind); if not a then return {ok=false,kind=kind,error="unsupported GeoData kind"} end
     local defer_restart=os.getenv("NFTFLOW_DEFER_RESTART")=="1"
-    local was_running=not defer_restart and quiet("/etc/init.d/nftflow running")
+    local was_running=not defer_restart and nftflow_running()
     local s=load(kind); s.pid=nixio.getpid(); s.status="running"; s.phase="starting"; save(kind,s)
-    if s.check_ok~=true or s.update_available~=true or not s.latest_version or not s.download_url then return fail(kind,s,"no checked GeoData update is available; check updates first") end
+    if s.rollback_pending==true then return fail(kind,s,"a previous GeoData update is still awaiting finalization") end
+    if s.check_ok~=true or s.update_available~=true or not s.latest_version or not s.download_url or not s.checksum_url then return fail(kind,s,"no complete checked GeoData update is available; check updates first") end
     if not mkdir(dirname(a.path)) then return fail(kind,s,"cannot create "..dirname(a.path)) end
-    local expected=s.latest_version; local t=temp(a.path..".nftflow-download")
-    s.phase="downloading"; s.message="Downloading checked GeoData release"; save(kind,s)
-    local ok,out=run(q(FETCH).." -T 30 -O "..q(t).." "..q(s.download_url))
-    if not ok then os.remove(t); return fail(kind,s,"GeoData download failed: "..trim(out)) end
-    local stat=fs.stat(t); if type(stat)~="table" or (tonumber(stat.size) or 0)<1024 then os.remove(t); return fail(kind,s,"downloaded GeoData file is empty or implausibly small") end
-    if not os.rename(t,a.path) then os.remove(t); return fail(kind,s,"cannot atomically replace "..a.path) end; quiet("chmod 0644 "..q(a.path))
-    s.phase="verifying"; s.message="Verifying installed GeoData"; save(kind,s)
-    stat=fs.stat(a.path); if type(stat)~="table" or (tonumber(stat.size) or 0)<1024 then return fail(kind,s,"installed GeoData file failed local verification") end
-    local persisted,err=version.write(kind,expected); if not persisted then return fail(kind,s,err or "cannot persist installed GeoData version") end
-    if version.read(kind)~=expected then return fail(kind,s,"installed GeoData version metadata failed local verification") end
-    local restart_error=nil
-    if was_running and not quiet("/etc/init.d/nftflow restart") then restart_error="GeoData updated, but NftFlow restart failed." end
-    s.ok=true; s.status="done"; s.phase="done"; s.finished=os.time(); s.pid=nil; s.updated=true; s.local_version=expected; s.source_version=expected; s.latest_version=expected
-    s.update_available=false; s.last_update=s.finished; s.post_check_error=restart_error; s.error=nil; s.message=kind.." updated successfully"; save(kind,s); unlock(kind); return s
+
+    local expected_version=s.latest_version
+    local download=temp(a.path..".nftflow-download")
+    local checksum=temp(a.path..".nftflow-sha256")
+    s.phase="downloading"; s.message="Downloading checked GeoData release and SHA256"; save(kind,s)
+    local ok,out=run(q(FETCH).." -T 30 -O "..q(download).." "..q(s.download_url))
+    if not ok then os.remove(download); return fail(kind,s,"GeoData download failed: "..trim(out)) end
+    ok,out=run(q(FETCH).." -T 15 -O "..q(checksum).." "..q(s.checksum_url))
+    if not ok then os.remove(download); os.remove(checksum); return fail(kind,s,"GeoData SHA256 download failed: "..trim(out)) end
+
+    s.phase="verifying"; s.message="Verifying GeoData SHA256"; save(kind,s)
+    local stat=fs.stat(download)
+    if type(stat)~="table" or (tonumber(stat.size) or 0)<1024 then os.remove(download); os.remove(checksum); return fail(kind,s,"downloaded GeoData file is empty or implausibly small") end
+    local expected=trim(read(checksum) or ""):match("^([0-9A-Fa-f]+)")
+    expected=expected and expected:lower() or nil
+    local hash_ok,hash_out=run("sha256sum "..q(download))
+    local actual=hash_ok and tostring(hash_out):match("^([0-9A-Fa-f]+)") or nil
+    actual=actual and actual:lower() or nil
+    os.remove(checksum)
+    if not expected or #expected~=64 or not expected:match("^[0-9a-f]+$") or not actual or actual~=expected then
+        os.remove(download)
+        return fail(kind,s,"GeoData SHA256 verification failed")
+    end
+
+    local backup=backup_path(a)
+    os.remove(backup)
+    local previous_stat=fs.stat(a.path)
+    s.rollback_pending=true
+    s.rollback_path=backup
+    s.rollback_had_previous=type(previous_stat)=="table"
+    s.rollback_version=version.read(kind)
+    s.rollback_last_update=last_update(s)
+    save(kind,s)
+
+    if s.rollback_had_previous==true and not os.rename(a.path,backup) then
+        clear_rollback(s); save(kind,s); os.remove(download)
+        return fail(kind,s,"cannot preserve previous GeoData file")
+    end
+    if not os.rename(download,a.path) then
+        if s.rollback_had_previous==true then os.rename(backup,a.path) end
+        clear_rollback(s); save(kind,s); os.remove(download)
+        return fail(kind,s,"cannot atomically replace "..a.path)
+    end
+    quiet("chmod 0644 "..q(a.path))
+
+    stat=fs.stat(a.path)
+    if type(stat)~="table" or (tonumber(stat.size) or 0)<1024 then
+        local restored,restore_error=rollback_asset(kind,a,s); save(kind,s)
+        return fail(kind,s,restored and "installed GeoData file failed local verification" or ("installed GeoData verification failed and rollback failed: "..tostring(restore_error)))
+    end
+    local persisted,err=version.write(kind,expected_version)
+    if not persisted then
+        local restored,restore_error=rollback_asset(kind,a,s); save(kind,s)
+        return fail(kind,s,restored and (err or "cannot persist installed GeoData version") or ("version update failed and rollback failed: "..tostring(restore_error)))
+    end
+    if version.read(kind)~=expected_version then
+        local restored,restore_error=rollback_asset(kind,a,s); save(kind,s)
+        return fail(kind,s,restored and "installed GeoData version metadata failed local verification" or ("version verification failed and rollback failed: "..tostring(restore_error)))
+    end
+
+    if was_running then
+        s.phase="restarting"; s.message="Restarting NftFlow once to load updated GeoData"; save(kind,s)
+        local restarted=quiet("/etc/init.d/nftflow restart")
+        quiet("sleep 2")
+        if not restarted or not nftflow_running() then
+            local restored,restore_error=rollback_asset(kind,a,s); save(kind,s)
+            if restored then
+                quiet("/etc/init.d/nftflow start")
+                return fail(kind,s,"NftFlow failed to start with updated GeoData; previous GeoData was restored")
+            end
+            return fail(kind,s,"NftFlow failed to start with updated GeoData and rollback failed: "..tostring(restore_error))
+        end
+        commit_asset(a,s)
+    elseif not defer_restart then
+        commit_asset(a,s)
+    end
+
+    s.ok=true; s.status="done"; s.phase="done"; s.finished=os.time(); s.pid=nil; s.updated=true; s.local_version=expected_version; s.source_version=expected_version; s.latest_version=expected_version
+    s.update_available=false; s.last_update=s.finished; s.post_check_error=nil; s.error=nil; s.message=kind.." updated successfully"; save(kind,s); unlock(kind); return s
+end
+
+local function finalize(kind,do_rollback)
+    local a=cfg(kind); if not a then return {ok=false,kind=kind,error="unsupported GeoData kind"} end
+    local s=load(kind)
+    if s.rollback_pending~=true then s.ok=true; return s end
+    if do_rollback then
+        local restored,err=rollback_asset(kind,a,s)
+        if not restored then return fail(kind,s,"GeoData rollback failed: "..tostring(err)) end
+        s.ok=false; s.status="failed"; s.phase="failed"; s.finished=os.time(); s.pid=nil; s.updated=false; s.update_available=true; s.error="GeoData update was rolled back because the update batch could not safely restart NftFlow"; save(kind,s); unlock(kind); return s
+    end
+    commit_asset(a,s)
+    s.ok=true; s.last_update=tonumber(s.finished) or os.time(); save(kind,s); return s
 end
 
 local function start(kind)
     if not cfg(kind) then return {ok=false,kind=kind,error="unsupported GeoData kind"} end
     if not mkdir(RUNTIME) or not mkdir(LOG_DIR) then return {ok=false,kind=kind,error="cannot create GeoData runtime directory"} end
     local s=load(kind); if active(s) then s.ok=true; return s end
-    if s.check_ok~=true or s.update_available~=true or not s.latest_version or not s.download_url then return {ok=false,kind=kind,error="no checked GeoData update is available; run Check updates first"} end
+    if s.rollback_pending==true then return {ok=false,kind=kind,error="a GeoData update is awaiting batch finalization"} end
+    if s.check_ok~=true or s.update_available~=true or not s.latest_version or not s.download_url or not s.checksum_url then return {ok=false,kind=kind,error="no complete checked GeoData update is available; run Check updates first"} end
     unlock(kind); if not quiet("mkdir "..q(lock_path(kind))) then return {ok=false,kind=kind,status="busy",error="another GeoData update is starting"} end
     s.ok=true; s.status="starting"; s.phase="starting"; s.started=os.time(); s.finished=nil; s.pid=nil; s.updated=false; s.post_check_error=nil; s.error=nil; s.message="GeoData update started"; save(kind,s)
     local log=LOG_DIR.."/geo-update-"..kind..".log"; local cmd=string.format("/usr/bin/lua /usr/libexec/nftflow/geo-update.lua worker %s </dev/null >>%s 2>&1 & echo $!",q(kind),q(log))
@@ -107,7 +228,11 @@ local function start(kind)
 end
 
 local function normalize(kind,s)
-    if (s.status=="starting" or s.status=="running" or s.status=="stopping") and s.pid and not alive(s.pid) then s.ok=false; s.status="failed"; s.phase="failed"; s.finished=os.time(); s.pid=nil; s.error="GeoData update worker exited unexpectedly"; save(kind,s); unlock(kind) end
+    if (s.status=="starting" or s.status=="running" or s.status=="stopping") and s.pid and not alive(s.pid) then
+        local a=cfg(kind)
+        if a and s.rollback_pending==true then rollback_asset(kind,a,s) end
+        s.ok=false; s.status="failed"; s.phase="failed"; s.finished=os.time(); s.pid=nil; s.updated=false; s.error="GeoData update worker exited unexpectedly"; save(kind,s); unlock(kind)
+    end
     return s
 end
 local function status()
@@ -116,5 +241,11 @@ local function status()
 end
 
 local command=arg[1] or ""; local r
-if command=="check" then r=check(arg[2]) elseif command=="start" then r=start(arg[2]) elseif command=="worker" then r=worker(arg[2]) elseif command=="status" then r=status() else r={ok=false,error="unknown GeoData update command"} end
+if command=="check" then r=check(arg[2])
+elseif command=="start" then r=start(arg[2])
+elseif command=="worker" then r=worker(arg[2])
+elseif command=="commit" then r=finalize(arg[2],false)
+elseif command=="rollback" then r=finalize(arg[2],true)
+elseif command=="status" then r=status()
+else r={ok=false,error="unknown GeoData update command"} end
 io.write(enc(r).."\n"); os.exit(r.ok==false and 1 or 0)
