@@ -169,16 +169,11 @@ function createEditor(options) {
     }
 
     api = {
-        byteLength: function() { return editorByteLength(textarea.value); },
         focus: focus,
         getValue: function() { return textarea.value; },
-        isDirty: isDirty,
         markSaved: markSaved,
-        maxBytes: maxBytes,
         root: root,
         setValue: setValue,
-        textarea: textarea,
-        update: updateState,
         withinLimit: withinLimit
     };
 
@@ -197,18 +192,9 @@ function createEditor(options) {
     textarea.addEventListener('select', updateCursorPosition);
     updateState();
 
-    api.destroy = function() {
-        textarea.removeEventListener('input', handleInput);
-        textarea.removeEventListener('keyup', updateCursorPosition);
-        textarea.removeEventListener('click', updateCursorPosition);
-        textarea.removeEventListener('select', updateCursorPosition);
-    };
-
     return api;
 }
 
 return baseclass.extend({
-    MAX_EDITOR_BYTES: MAX_EDITOR_BYTES,
-    byteLength: editorByteLength,
     create: createEditor
 });
