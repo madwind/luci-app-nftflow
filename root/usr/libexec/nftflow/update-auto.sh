@@ -227,7 +227,7 @@ snapshot_geo() {
     version_path="$asset.version"
     mkdir -p "$BATCH_BACKUP" || return 1
     rm -f "$BATCH_BACKUP/$kind.dat" "$BATCH_BACKUP/$kind.version" \
-        "$BATCH_BACKUP/$kind.had-file" "$BATCH_BACKUP/$kind.had-version"
+        "$BATCH_BACKUP/$kind.had-file" "$BATCH_BACKUP/$kind.had-version" "$BATCH_BACKUP/$kind.snapshot"
     if [ -f "$asset" ]; then
         cp -p "$asset" "$BATCH_BACKUP/$kind.dat" || return 1
         touch "$BATCH_BACKUP/$kind.had-file" || return 1
@@ -236,11 +236,13 @@ snapshot_geo() {
         cp -p "$version_path" "$BATCH_BACKUP/$kind.version" || return 1
         touch "$BATCH_BACKUP/$kind.had-version" || return 1
     fi
+    touch "$BATCH_BACKUP/$kind.snapshot" || return 1
     return 0
 }
 
 restore_geo() {
     local kind="$1" asset version_path
+    [ -e "$BATCH_BACKUP/$kind.snapshot" ] || return 0
     asset="$(geo_asset_path "$kind")" || return 1
     version_path="$asset.version"
     mkdir -p "${asset%/*}" || return 1
@@ -260,7 +262,7 @@ restore_geo() {
 restore_all_geo() {
     local kind
     for kind in geoip geosite; do
-        [ -e "$BATCH_BACKUP/$kind.had-file" ] || [ -e "$BATCH_BACKUP/$kind.had-version" ] || continue
+        [ -e "$BATCH_BACKUP/$kind.snapshot" ] || continue
         restore_geo "$kind" || logger -t nftflow-update "$kind rollback after batch restart failure failed"
     done
 }
