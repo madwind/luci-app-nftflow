@@ -31,6 +31,7 @@ function activeStatus(status) {
 
 function phaseText(operation) {
     var phase = operation && (operation.phase || operation.status) || '';
+    if (phase === 'starting') return _('Starting update...');
     if (phase === 'downloading') return _('Downloading...');
     if (phase === 'verifying') return _('Verifying...');
     if (phase === 'installing') return _('Installing...');
@@ -91,6 +92,7 @@ return view.extend({
         var refreshBusy = false;
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
         var checkEnabled = E('input', { 'type': 'checkbox', 'disabled': '' });
+        var scheduleText = E('span', {}, _('Weekly'));
         var checkButton = E('button', { 'class': 'btn cbi-button cbi-button-action', 'type': 'button' }, _('Check updates'));
         var componentGrid = E('div', { 'class': 'nftflow-update-grid' });
 
@@ -100,6 +102,23 @@ return view.extend({
 
         function anyActive() {
             return ALL_KINDS.some(function(kind) { return rows[kind] && rows[kind].active; });
+        }
+
+        function anyStarting() {
+            return ALL_KINDS.some(function(kind) { return rows[kind] && rows[kind].starting; });
+        }
+
+        function renderSchedule(result) {
+            var enabled = result && (result.check_enabled === true || result.check_enabled === 1);
+            var scheduled = result && (result.scheduled === true || result.scheduled === 1);
+            var next;
+
+            if (!enabled) next = _('Disabled');
+            else if (!scheduled) next = _('Not scheduled');
+            else if (result.next_check) next = String(result.next_check) + (result.timezone ? ' ' + result.timezone : '');
+            else next = _('Unknown');
+
+            nftflowUi.setText(scheduleText, _('Weekly · Next: %s').format(next));
         }
 
         function renderVersion(row) {
@@ -128,13 +147,13 @@ return view.extend({
         function updateButtons(row, operation) {
             var active = activeStatus(operation && operation.status);
             row.active = active;
-            row.update.disabled = active || checkingAll || row.updateAvailable !== true;
-            if (!active) row.stop.disabled = true;
+            row.update.disabled = row.starting || active || checkingAll || row.updateAvailable !== true;
+            if (row.starting || !active) row.stop.disabled = true;
             else if (row.kind === 'xray') row.stop.disabled = true;
             else if (row.kind === 'nftflow' && operation.phase === 'installing') row.stop.disabled = true;
             else row.stop.disabled = operation.status === 'stopping';
             row.auto.disabled = false;
-            checkButton.disabled = checkingAll || anyActive();
+            checkButton.disabled = checkingAll || anyStarting() || anyActive();
         }
 
         function updateRow(row, component, operation, fallback) {
@@ -152,6 +171,7 @@ return view.extend({
             renderHistory(row);
 
             if (row.checking) nftflowUi.setState(row.status, 'notice', _('Checking for updates...'));
+            else if (row.starting) nftflowUi.setState(row.status, 'notice', _('Starting update...'));
             else if (activeStatus(operation.status)) nftflowUi.setState(row.status, 'notice', phaseText(operation));
             else if (operation.status === 'failed') nftflowUi.setState(row.status, 'error', operation.error || _('Update failed'));
             else if (operation.status === 'stopped') nftflowUi.setState(row.status, 'notice', _('Stopped'));
@@ -176,6 +196,7 @@ return view.extend({
                 checkedAt: 0,
                 lastUpdateAt: 0,
                 checking: false,
+                starting: false,
                 active: false
             };
             row.history.hidden = true;
@@ -217,6 +238,7 @@ return view.extend({
             if (!result || result.ok !== true) throw new Error(nftflowUi.errorMessage(result, _('Unable to read update settings.')));
             checkEnabled.checked = result.check_enabled === true || result.check_enabled === 1;
             checkEnabled.disabled = false;
+            renderSchedule(result);
             ALL_KINDS.forEach(function(kind) {
                 rows[kind].auto.checked = result[kind] === true || result[kind] === 1;
                 rows[kind].auto.disabled = false;
@@ -238,6 +260,11 @@ return view.extend({
             }).then(function() {
                 refreshBusy = false;
             });
+        }
+
+        function refreshSettings() {
+            if (!pageVisible) return Promise.resolve();
+            return callUpdateSettings().then(applySettings).catch(function() { return false; });
         }
 
         function applyCheckResult(row, result) {
@@ -266,7 +293,7 @@ return view.extend({
         }
 
         function checkAll() {
-            if (checkingAll || anyActive()) return Promise.resolve();
+            if (checkingAll || anyStarting() || anyActive()) return Promise.resolve();
             checkingAll = true;
             checkButton.disabled = true;
             setMessage('notice', _('Checking all components...'));
@@ -300,15 +327,23 @@ return view.extend({
         }
 
         function startUpdate(row) {
-            if (row.updateAvailable !== true || row.active) return Promise.resolve();
+            if (checkingAll || row.starting || row.updateAvailable !== true || row.active) return Promise.resolve();
+            row.starting = true;
             row.update.disabled = true;
+            row.stop.disabled = true;
             checkButton.disabled = true;
+            nftflowUi.setState(row.status, 'notice', _('Starting update...'));
+
             return callUpdateInstall(row.kind).then(function(result) {
                 result = nftflowUi.requireOk(result, _('%s update could not start.').format(componentLabel(row.kind)));
+                row.starting = false;
                 nftflowUi.setState(row.status, 'notice', phaseText(result));
+                updateButtons(row, result);
                 setMessage('notice', _('%s update started.').format(componentLabel(row.kind)));
                 return refresh();
             }).catch(function(error) {
+                row.starting = false;
+                updateButtons(row, {});
                 setMessage('error', nftflowUi.errorMessage(error, _('%s update could not start.').format(componentLabel(row.kind))));
                 return refresh();
             });
@@ -363,7 +398,11 @@ return view.extend({
         else setMessage('error', nftflowUi.errorMessage(settingsInitial, _('Unable to read update settings.')));
 
         poll.add(refresh, 2);
-        window.setInterval(function() { if (pageVisible) ALL_KINDS.forEach(function(kind) { renderHistory(rows[kind]); }); }, 60000);
+        window.setInterval(function() {
+            if (!pageVisible) return;
+            ALL_KINDS.forEach(function(kind) { renderHistory(rows[kind]); });
+            refreshSettings();
+        }, 60000);
         window.addEventListener('pagehide', function() { pageVisible = false; poll.remove(refresh); }, { once: true });
 
         var layoutStyle = E('style', { 'type': 'text/css' }, [
@@ -378,7 +417,7 @@ return view.extend({
             E('div', { 'class': 'cbi-map-descr' }, _('Checks discover available versions. Updates install only a version already found by a check.')),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Update checks')),
-                valueRow(_('Automatic update checks'), E('label', {}, [ checkEnabled, ' ', _('Weekly') ])),
+                valueRow(_('Automatic update checks'), E('label', {}, [ checkEnabled, ' ', scheduleText ])),
                 valueRow(_('Actions'), checkButton),
                 message
             ]),
