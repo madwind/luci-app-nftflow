@@ -1,9 +1,12 @@
 #!/bin/sh
-# Keep the policy/configuration logic in Lua so it can use UCI and LuCI JSONC.
+# Thin dispatcher: each subsystem owns its current implementation.
 
-LUA_CTL=/usr/libexec/nftflow/nftflowctl.lua
+RUNTIME_CTL=/usr/libexec/nftflow/runtime.lua
 CONFIG_CTL=/usr/libexec/nftflow/config.lua
 FIREWALL_CTL=/usr/libexec/nftflow/firewall.lua
+ROUTING_CTL=/usr/libexec/nftflow/routing.lua
+GEO_STATUS_CTL=/usr/libexec/nftflow/geo-status.lua
+GEO_CHECK_CTL=/usr/libexec/nftflow/geo-check.lua
 STATUS_BIN=/usr/libexec/nftflow/status-bin
 FIREWALL_SOURCE=/etc/nftflow/firewall.nft
 FIREWALL_DEFAULT=/usr/share/nftflow/defaults/firewall.nft
@@ -23,11 +26,7 @@ if [ "$1" = "run-guarded" ]; then
         state_name="$1"
         state_pid="${2:-}"
         state_message="${3:-}"
-        if [ -n "$state_pid" ]; then
-            /usr/bin/lua "$LUA_CTL" state "$state_name" "$state_pid" "$state_message" >/dev/null 2>&1 || true
-        else
-            /usr/bin/lua "$LUA_CTL" state "$state_name" "" "$state_message" >/dev/null 2>&1 || true
-        fi
+        /usr/bin/lua "$RUNTIME_CTL" state "$state_name" "$state_pid" "$state_message" >/dev/null 2>&1 || true
     }
 
     terminate_child() {
@@ -40,9 +39,7 @@ if [ "$1" = "run-guarded" ]; then
                 sleep 1
                 _wait=$((_wait + 1))
             done
-            if kill -0 "$child_pid" >/dev/null 2>&1; then
-                kill -KILL "$child_pid" >/dev/null 2>&1 || true
-            fi
+            kill -0 "$child_pid" >/dev/null 2>&1 && kill -KILL "$child_pid" >/dev/null 2>&1 || true
         fi
         wait "$child_pid" 2>/dev/null || true
     }
@@ -51,14 +48,10 @@ if [ "$1" = "run-guarded" ]; then
         trap - EXIT TERM INT
         if [ "$stop_requested" = "1" ]; then
             /usr/bin/lua "$FIREWALL_CTL" firewall off >/dev/null 2>&1 || true
-            /usr/bin/lua "$LUA_CTL" route del >/dev/null 2>&1 || true
+            /usr/bin/lua "$ROUTING_CTL" route del >/dev/null 2>&1 || true
         fi
         terminate_child
-        if [ "$stop_requested" = "1" ]; then
-            set_state stopped
-        else
-            set_state failed "" "${failure_message:-Xray exited unexpectedly}"
-        fi
+        if [ "$stop_requested" = "1" ]; then set_state stopped; else set_state failed "" "${failure_message:-Xray exited unexpectedly}"; fi
     }
 
     stop_child() {
@@ -70,11 +63,8 @@ if [ "$1" = "run-guarded" ]; then
 
     trap cleanup EXIT
     trap stop_child TERM INT
-
     mkdir -p /var/run/nftflow || exit 1
 
-    # Keep stdout/stderr attached to the procd-managed wrapper. procd forwards
-    # both streams to logd, where they are tagged with the nftflowctl identity.
     XRAY_LOCATION_ASSET="$asset_dir" "$xray_bin" run -format yaml -c "$config_file" &
     child_pid=$!
     set_state starting "$child_pid" "Xray process is starting"
@@ -88,32 +78,23 @@ if [ "$1" = "run-guarded" ]; then
     fi
 
     if [ -r "$FIREWALL_SOURCE" ]; then
-        firewall_output="$(/usr/bin/lua "$FIREWALL_CTL" firewall on 2>&1)"
-        firewall_status=$?
+        firewall_output="$(/usr/bin/lua "$FIREWALL_CTL" firewall on 2>&1)"; firewall_status=$?
     elif [ -r "$FIREWALL_DEFAULT" ]; then
-        firewall_output="$(/usr/bin/lua "$FIREWALL_CTL" firewall-apply "$(cat "$FIREWALL_DEFAULT")" 2>&1)"
-        firewall_status=$?
+        firewall_output="$(/usr/bin/lua "$FIREWALL_CTL" firewall-apply "$(cat "$FIREWALL_DEFAULT")" 2>&1)"; firewall_status=$?
     else
-        firewall_output="missing firewall source: $FIREWALL_SOURCE and $FIREWALL_DEFAULT"
-        firewall_status=1
+        firewall_output="missing firewall source: $FIREWALL_SOURCE and $FIREWALL_DEFAULT"; firewall_status=1
     fi
-    if [ "$firewall_status" -ne 0 ]; then
-        logger -t nftflowctl "firewall startup apply failed: ${firewall_output:-unknown error}"
-    fi
+    [ "$firewall_status" -eq 0 ] || logger -t nftflowctl "firewall startup apply failed: ${firewall_output:-unknown error}"
 
     if [ -r "$ROUTING_SOURCE" ]; then
-        routing_output="$(/usr/bin/lua "$LUA_CTL" route-apply 2>&1)"
-        routing_status=$?
+        routing_output="$(/usr/bin/lua "$ROUTING_CTL" route-apply 2>&1)"; routing_status=$?
     elif [ -r "$ROUTING_DEFAULT" ]; then
-        routing_output="$(/usr/bin/lua "$LUA_CTL" routing-apply "$(cat "$ROUTING_DEFAULT")" 2>&1)"
-        routing_status=$?
+        routing_output="$(/usr/bin/lua "$ROUTING_CTL" routing-apply "$(cat "$ROUTING_DEFAULT")" 2>&1)"; routing_status=$?
     else
-        routing_output="missing routing source: $ROUTING_SOURCE and $ROUTING_DEFAULT"
-        routing_status=1
+        routing_output="missing routing source: $ROUTING_SOURCE and $ROUTING_DEFAULT"; routing_status=1
     fi
-    if [ "$routing_status" -ne 0 ]; then
-        logger -t nftflowctl "routing startup apply failed: ${routing_output:-unknown error}"
-    fi
+    [ "$routing_status" -eq 0 ] || logger -t nftflowctl "routing startup apply failed: ${routing_output:-unknown error}"
+
     set_state ready "$child_pid" 'Xray process is running'
     wait "$child_pid"
     child_status=$?
@@ -123,34 +104,27 @@ fi
 
 case "$1" in
     config-read|config-validate|config-validate-file|config-save|config-save-file|config-apply|config-apply-file)
-        exec /usr/bin/lua "$CONFIG_CTL" "$@"
-        ;;
+        exec /usr/bin/lua "$CONFIG_CTL" "$@" ;;
     firewall)
-        if [ "${2:-on}" = "on" ] && [ ! -r "$FIREWALL_SOURCE" ] && [ -r "$FIREWALL_DEFAULT" ]; then
-            exec /usr/bin/lua "$FIREWALL_CTL" firewall-apply "$(cat "$FIREWALL_DEFAULT")"
-        fi
-        exec /usr/bin/lua "$FIREWALL_CTL" "$@"
-        ;;
+        if [ "${2:-on}" = "on" ] && [ ! -r "$FIREWALL_SOURCE" ] && [ -r "$FIREWALL_DEFAULT" ]; then exec /usr/bin/lua "$FIREWALL_CTL" firewall-apply "$(cat "$FIREWALL_DEFAULT")"; fi
+        exec /usr/bin/lua "$FIREWALL_CTL" "$@" ;;
     firewall-read|firewall-validate|firewall-validate-file|firewall-save|firewall-save-file|firewall-apply|firewall-apply-file)
-        exec /usr/bin/lua "$FIREWALL_CTL" "$@"
-        ;;
+        exec /usr/bin/lua "$FIREWALL_CTL" "$@" ;;
     route-apply)
-        if [ ! -r "$ROUTING_SOURCE" ] && [ -r "$ROUTING_DEFAULT" ]; then
-            exec /usr/bin/lua "$LUA_CTL" routing-apply "$(cat "$ROUTING_DEFAULT")"
-        fi
-        exec /usr/bin/lua "$LUA_CTL" "$@"
-        ;;
-    status|health)
-        NFTFLOW_NFT_TERSE=1 PATH="$STATUS_BIN:$PATH" exec /usr/bin/lua "$LUA_CTL" "$@"
-        ;;
-    cleanup)
-        output="$(/usr/bin/lua "$LUA_CTL" "$@" 2>&1)"
-        status=$?
-        rm -f /var/run/nftflow/config.applied.yaml
-        rm -f /var/run/nftflow/firewall.applied.compiled.nft
-        printf '%s\n' "$output"
-        exit "$status"
-        ;;
+        if [ ! -r "$ROUTING_SOURCE" ] && [ -r "$ROUTING_DEFAULT" ]; then exec /usr/bin/lua "$ROUTING_CTL" routing-apply "$(cat "$ROUTING_DEFAULT")"; fi
+        exec /usr/bin/lua "$ROUTING_CTL" "$@" ;;
+    route|routing-read|routing-validate|routing-validate-file|routing-save|routing-save-file|routing-apply|routing-apply-file)
+        exec /usr/bin/lua "$ROUTING_CTL" "$@" ;;
+    geo)
+        case "${2:-}" in
+            status) exec /usr/bin/lua "$GEO_STATUS_CTL" ;;
+            check) exec /usr/bin/lua "$GEO_CHECK_CTL" "$3" ;;
+            *) printf '%s\n' '{"ok":false,"error":"unsupported GeoData command"}'; exit 1 ;;
+        esac ;;
+    status)
+        NFTFLOW_NFT_TERSE=1 PATH="$STATUS_BIN:$PATH" exec /usr/bin/lua "$RUNTIME_CTL" "$@" ;;
+    prepare|cleanup|state|action|reload|service-sync)
+        exec /usr/bin/lua "$RUNTIME_CTL" "$@" ;;
+    *)
+        printf '%s\n' '{"ok":false,"error":"unsupported nftflowctl command"}'; exit 1 ;;
 esac
-
-exec /usr/bin/lua "$LUA_CTL" "$@"
