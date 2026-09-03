@@ -79,11 +79,13 @@ function firewall_read_effective() {
     if (result && result.ok === true) return result;
     let config = read_text(DEFAULT_FIREWALL);
     if (config == null) return result;
+    let runtime = capture_command('nft list table inet nftflow');
+    let active = runtime.ok && trim(runtime.output || '') ? runtime.output : '# No managed NftFlow nftables tables were found.\n';
     let applied = read_text(APPLIED_FIREWALL);
     return {
         ok: true, config: config, path: SAVED_FIREWALL, bytes: length(config), using_default: true,
-        active: '# Runtime rules are unavailable because the firewall controller read failed.\n',
-        active_found: false, table_count: 0, active_table_count: 0, missing_tables: [],
+        active: active, active_found: runtime.ok === true && trim(runtime.output || '') !== '',
+        table_count: runtime.ok === true ? 1 : 0, active_table_count: runtime.ok === true ? 1 : 0, missing_tables: [],
         applied: applied != null, applied_config: applied || '', candidate_config: read_text(CANDIDATE_FIREWALL) || '',
         applied_path: APPLIED_FIREWALL, candidate_path: CANDIDATE_FIREWALL
     };
