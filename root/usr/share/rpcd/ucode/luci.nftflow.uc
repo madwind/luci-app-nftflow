@@ -10,8 +10,8 @@ const RUNTIME = '/var/run/nftflow';
 const CTL = '/usr/libexec/nftflow/nftflowctl';
 const GEO_UPDATE = '/usr/libexec/nftflow/geo-update.lua';
 const SOFTWARE_UPDATE = '/usr/libexec/nftflow/update.lua';
+const UPDATE_AUTO = '/usr/libexec/nftflow/update-auto.sh';
 const STOP_UPDATE = '/usr/libexec/nftflow/stop-update.lua';
-const GEO_CRON_TAG = 'nftflow-geodata-weekly';
 const RPC_DIRECTORY_MODE = 448;
 const RPC_FILE_MODE = 384;
 const RPC_PAYLOAD_MAX_BYTES = 32 * 1024;
@@ -33,7 +33,7 @@ function parse_result(output) {
         if (!trim(lines[i])) continue;
         try { return json(trim(lines[i])); } catch (e) {}
     }
-    return { ok: false, error: trim(output || 'nftflowctl returned no JSON') };
+    return { ok: false, error: trim(output || 'controller returned no JSON') };
 }
 
 function shellquote(value) { return "'" + replace(`${value == null ? '' : value}`, /'/g, "'\\''") + "'"; }
@@ -59,6 +59,12 @@ function run_ctl(args) { let command = `/bin/sh ${CTL}`; for (let arg in args) c
 function run_geo_update(command, kind) { let line = `/usr/bin/lua ${GEO_UPDATE} ${shellquote(command)}`; if (kind) line += ` ${shellquote(kind)}`; return run_command(line); }
 function run_software_update(command, kind) { let line = `/usr/bin/lua ${SOFTWARE_UPDATE} ${shellquote(command)}`; if (kind) line += ` ${shellquote(kind)}`; return run_command(line); }
 function run_stop_update(kind) { return run_command(`/usr/bin/lua ${STOP_UPDATE} ${shellquote(kind)}`); }
+function run_update_auto(command, kind, enabled) {
+    let line = `/bin/sh ${UPDATE_AUTO} ${shellquote(command)}`;
+    if (kind != null) line += ` ${shellquote(kind)}`;
+    if (enabled != null) line += ` ${shellquote(enabled ? 1 : 0)}`;
+    return run_command(line);
+}
 
 function config_read_effective() {
     let result = run_ctl([ 'config-read' ]);
@@ -132,17 +138,6 @@ function status_with_defaults() {
     return result;
 }
 
-function weekly_geo_status() {
-    let result = run_ctl([ 'geo', 'status' ]);
-    if (!result || result.ok !== true) return result;
-    let scheduled = false;
-    let fd = open('/etc/crontabs/root', 'r');
-    if (fd) { let crontab = fd.read('all') || ''; fd.close(); scheduled = index(crontab, GEO_CRON_TAG) >= 0; }
-    let schedule = scheduled ? run_geo_update('next-run') : null;
-    result.auto_update = { scheduled: scheduled, interval_days: 7, schedule: '17 4 * * 0', next_update: schedule && schedule.ok === true ? schedule.next_update : null };
-    return result;
-}
-
 function create_payload(value) {
     let content = `${value == null ? '' : value}`;
     if (access(RUNTIME, 'f') !== true && mkdir(RUNTIME, RPC_DIRECTORY_MODE) !== true && access(RUNTIME, 'f') !== true) return null;
@@ -163,8 +158,17 @@ function run_ctl_file(command, value) {
 }
 
 function valid_action(name) { return name == 'start' || name == 'stop' || name == 'reload' || name == 'restart'; }
-function valid_kind(kind) { return kind == 'geoip' || kind == 'geosite'; }
-function valid_update_kind(kind) { return kind == 'nftflow' || kind == 'xray'; }
+function valid_geo_kind(kind) { return kind == 'geoip' || kind == 'geosite'; }
+function valid_software_kind(kind) { return kind == 'nftflow' || kind == 'xray'; }
+function valid_update_kind(kind) { return valid_software_kind(kind) || valid_geo_kind(kind); }
+function update_check(kind) {
+    if (!valid_update_kind(kind)) return { ok: false, error: 'invalid update kind' };
+    return valid_software_kind(kind) ? run_software_update('check', kind) : run_geo_update('check', kind);
+}
+function update_install(kind) {
+    if (!valid_update_kind(kind)) return { ok: false, error: 'invalid update kind' };
+    return valid_software_kind(kind) ? run_software_update('start', kind) : run_geo_update('start', kind);
+}
 
 const methods = {
     status: { args: {}, call: () => status_with_defaults() },
@@ -180,11 +184,15 @@ const methods = {
     config_validate: { args: { config: '' }, call: request => run_ctl_file('config-validate-file', request && request.args ? request.args.config || '' : '') },
     config_apply: { args: { config: '' }, call: request => run_ctl_file('config-apply-file', request && request.args ? request.args.config || '' : '') },
     config_save: { args: { config: '' }, call: request => run_ctl_file('config-save-file', request && request.args ? request.args.config || '' : '') },
-    geo_status: { args: {}, call: () => weekly_geo_status() },
-    geo_stop: { args: { kind: 'geosite' }, call: request => { let kind = request && request.args ? request.args.kind || '' : ''; if (!valid_kind(kind)) return { ok: false, error: 'invalid geodata kind' }; return run_stop_update(kind); } },
+    geo_status: { args: {}, call: () => run_ctl([ 'geo', 'status' ]) },
+    geo_stop: { args: { kind: 'geosite' }, call: request => { let kind = request && request.args ? request.args.kind || '' : ''; if (!valid_geo_kind(kind)) return { ok: false, error: 'invalid geodata kind' }; return run_stop_update(kind); } },
     update_status: { args: {}, call: () => run_software_update('status') },
-    update_install: { args: { kind: 'nftflow' }, call: request => { let kind = request && request.args ? request.args.kind || '' : ''; if (!valid_update_kind(kind)) return { ok: false, error: 'invalid update kind' }; return run_software_update('start', kind); } },
+    update_check: { args: { kind: 'nftflow' }, call: request => update_check(request && request.args ? request.args.kind || '' : '') },
+    update_install: { args: { kind: 'nftflow' }, call: request => update_install(request && request.args ? request.args.kind || '' : '') },
     update_stop: { args: { kind: 'nftflow' }, call: request => { let kind = request && request.args ? request.args.kind || '' : ''; if (!valid_update_kind(kind)) return { ok: false, error: 'invalid update kind' }; return run_stop_update(kind); } },
+    update_settings: { args: {}, call: () => run_update_auto('status') },
+    update_set_check: { args: { enabled: 0 }, call: request => run_update_auto('set-check', request && request.args ? request.args.enabled : 0) },
+    update_set_auto: { args: { kind: 'nftflow', enabled: 0 }, call: request => { let args = request && request.args ? request.args : {}; if (!valid_update_kind(args.kind || '')) return { ok: false, error: 'invalid update kind' }; return run_update_auto('set-auto', args.kind, args.enabled); } },
     action: { args: { name: '' }, call: request => { let name = request && request.args ? request.args.name || '' : ''; if (!valid_action(name)) return { ok: false, error: 'unsupported service action' }; return run_ctl([ 'action', name ]); } },
     service_sync: { args: {}, call: () => run_ctl([ 'service-sync' ]) }
 };
