@@ -14,7 +14,6 @@ local CANDIDATE = RUNTIME .. "/firewall.candidate.nft"
 local APPLIED_SOURCE = RUNTIME .. "/firewall.applied.nft"
 local APPLIED_COMPILED = RUNTIME .. "/firewall.applied.compiled.nft"
 local EDITOR_MAX_BYTES = 32 * 1024
-local GEOIP_ELEMENT_BATCH_SIZE = 256
 local OWNED_TABLE = "nftflow"
 local temporary_sequence = 0
 
@@ -158,37 +157,16 @@ local function queue_geoip_elements(deferred, order, set_spec, values)
     end
 end
 
-local function batched_add_element(prefix, values)
-    local batches = {}
-    for first = 1, #values, GEOIP_ELEMENT_BATCH_SIZE do
-        local chunk = {}
-        local last = math.min(first + GEOIP_ELEMENT_BATCH_SIZE - 1, #values)
-        for index = first, last do chunk[#chunk + 1] = values[index] end
-        batches[#batches + 1] = prefix .. table.concat(chunk, ", ") .. " }\n"
-    end
-    return batches
-end
-
-local function geoip_batches(order)
-    local batches = {}
+local function append_geoip_elements(output, order)
     for _, bucket in ipairs(order) do
-        local prefix = string.format(
-            "add element %s %s %s { ",
-            bucket.spec.table_family, bucket.spec.table_name, bucket.spec.name
-        )
-        for _, batch in ipairs(batched_add_element(prefix, bucket.values)) do
-            batches[#batches + 1] = batch
+        if #bucket.values > 0 then
+            output[#output + 1] = string.format(
+                "\nadd element %s %s %s { %s }\n",
+                bucket.spec.table_family, bucket.spec.table_name, bucket.spec.name,
+                table.concat(bucket.values, ", ")
+            )
         end
     end
-    return batches
-end
-
-local function compiled_output(base, batches)
-    local output = { base }
-    for _, batch in ipairs(batches or {}) do
-        output[#output + 1] = "\n" .. batch
-    end
-    return table.concat(output)
 end
 
 local function compile(raw)
@@ -196,7 +174,7 @@ local function compile(raw)
     if not parsed then return nil, nil, parse_error end
 
     local warnings, warning_seen = {}, {}
-    if #parsed.macros == 0 then return raw, parsed, nil, warnings, raw, {} end
+    if #parsed.macros == 0 then return raw, parsed, nil, warnings end
 
     local cache, output, position = {}, {}, 1
     local deferred, deferred_order = {}, {}
@@ -237,45 +215,9 @@ local function compile(raw)
     end
     output[#output + 1] = raw:sub(position)
 
-    local base = remove_empty_elements_blocks(table.concat(output))
-    local batches = geoip_batches(deferred_order)
-    return compiled_output(base, batches), parsed, nil, warnings, base, batches
-end
-
-local function split_add_element_command(line)
-    local prefix, body = line:match("^(add%s+element%s+%S+%s+%S+%s+%S+%s+{%s*)(.-)%s*}%s*$")
-    if not prefix then return { line .. "\n" } end
-    local values = {}
-    for value in tostring(body or ""):gmatch("[^,]+") do
-        value = trim(value)
-        if value ~= "" then values[#values + 1] = value end
-    end
-    if #values == 0 then return { line .. "\n" } end
-    return batched_add_element(prefix, values)
-end
-
-local function split_compiled_snapshot(compiled)
-    compiled = tostring(compiled or "")
-    local lines = {}
-    for line in (compiled .. "\n"):gmatch("(.-)\n") do lines[#lines + 1] = line end
-
-    local batches, index = {}, #lines
-    while index > 0 do
-        local line = trim(lines[index])
-        if line == "" then
-            index = index - 1
-        elseif line:match("^add%s+element%s+%S+%s+%S+%s+%S+%s+{%s*.*}%s*$") then
-            local split = split_add_element_command(line)
-            for batch_index = #split, 1, -1 do table.insert(batches, 1, split[batch_index]) end
-            index = index - 1
-        else
-            break
-        end
-    end
-
-    local base = table.concat(lines, "\n", 1, index)
-    if base ~= "" and base:sub(-1) ~= "\n" then base = base .. "\n" end
-    return base, batches
+    local compiled_output = { remove_empty_elements_blocks(table.concat(output)) }
+    append_geoip_elements(compiled_output, deferred_order)
+    return table.concat(compiled_output), parsed, nil, warnings
 end
 
 local function table_command(verb, spec)
@@ -352,37 +294,16 @@ local function run_transaction(content)
     return true, ""
 end
 
-local function load_plan(current_tables, base, batches, desired_tables)
-    local loaded, load_error = run_transaction(transaction(current_tables, base, desired_tables))
-    if not loaded then return false, load_error, false end
-    for index, batch in ipairs(batches or {}) do
-        local added, add_error = run_transaction(batch)
-        if not added then
-            return false, "GeoIP element batch " .. tostring(index) .. " failed: " .. tostring(add_error), true
-        end
-    end
-    return true, "", true
-end
-
-local function restore_snapshot(runtime_tables, current_tables, compiled)
-    if compiled == nil or trim(compiled) == "" then
-        return run_transaction(transaction(runtime_tables, "", current_tables))
-    end
-    local base, batches = split_compiled_snapshot(compiled)
-    local restored, restore_error = load_plan(runtime_tables, base, batches, current_tables)
-    return restored, restore_error
-end
-
 local function validate(raw)
     raw = tostring(raw or "")
     if #raw > EDITOR_MAX_BYTES then return { ok = false, valid = false, error = "firewall file is larger than 32 KiB" } end
     if raw:find("%z") then return { ok = false, valid = false, error = "firewall file contains a NUL byte" } end
     local source = normalize(raw)
-    local compiled, parsed, compile_error, warnings, base, batches = compile(source)
+    local compiled, parsed, compile_error, warnings = compile(source)
     if not compiled then return { ok = false, valid = false, error = compile_error } end
     if not mkdirp(RUNTIME) then return { ok = false, valid = false, error = "cannot create " .. RUNTIME } end
     local path = temporary_path(RUNTIME .. "/firewall-check.nft")
-    local saved, save_error = write_atomic(path, base, 600)
+    local saved, save_error = write_atomic(path, compiled, 600)
     if not saved then return { ok = false, valid = false, error = save_error } end
     local pipe = io.popen("nft --check --file " .. shellquote(path) .. " 2>&1; printf '\\n__NFTFLOW_NFT_RC__%s\\n' \"$?\"")
     local detail = pipe and (pipe:read("*a") or "") or "unable to execute nft"
@@ -393,8 +314,7 @@ local function validate(raw)
     local valid = exit_code == 0
     local result = {
         ok = valid, valid = valid, detail = trim(detail), config = source, compiled = compiled,
-        bytes = #source, tables = parsed.tables, geoip_macros = #parsed.macros, warnings = warnings,
-        load_base = base, load_batches = batches
+        bytes = #source, tables = parsed.tables, geoip_macros = #parsed.macros, warnings = warnings
     }
     if not valid then result.error = "nftables syntax check failed" end
     return result
@@ -429,7 +349,7 @@ end
 
 local function save(raw)
     local checked = validate(raw)
-    if not checked.valid then checked.compiled = nil; checked.load_base = nil; checked.load_batches = nil; return checked end
+    if not checked.valid then checked.compiled = nil; return checked end
     local saved, save_error = write_atomic(FIREWALL_SOURCE, checked.config, 600)
     if not saved then return { ok = false, error = save_error } end
     return {
@@ -445,22 +365,15 @@ local function apply(raw, write_candidate)
         if not saved then return { ok = false, error = save_error } end
     end
     local checked = validate(source)
-    if not checked.valid then checked.compiled = nil; checked.load_base = nil; checked.load_batches = nil; return checked end
+    if not checked.valid then checked.compiled = nil; return checked end
     local desired, desired_tables = checked.compiled, checked.tables
     local previous_source, previous_compiled = read_file(APPLIED_SOURCE), read_file(APPLIED_COMPILED)
     local current_tables = managed_tables()
     local current = previous_compiled
     if current == nil and #current_tables > 0 then current = select(1, active_firewall(current_tables, nil, false)) end
 
-    local applied, apply_error, changed = load_plan(current_tables, checked.load_base, checked.load_batches, desired_tables)
-    if not applied then
-        local detail = apply_error
-        if changed then
-            local restored, restore_error = restore_snapshot(managed_tables(), current_tables, current)
-            if not restored then detail = detail .. "; nft rollback failed: " .. (restore_error or "unknown error") end
-        end
-        return { ok = false, valid = false, error = "failed to load configured nftables tables", detail = detail }
-    end
+    local applied, apply_error = run_transaction(transaction(current_tables, desired, desired_tables))
+    if not applied then return { ok = false, valid = false, error = "failed to load configured nftables tables", detail = apply_error } end
 
     local runtime_tables = managed_tables()
     local verified = #runtime_tables == #desired_tables
@@ -468,7 +381,7 @@ local function apply(raw, write_candidate)
         for _, spec in ipairs(desired_tables) do if not table_active(spec) then verified = false; break end end
     end
     if not verified then
-        local restored, restore_error = restore_snapshot(runtime_tables, current_tables, current)
+        local restored, restore_error = run_transaction(transaction(runtime_tables, current or "", current_tables))
         local detail = "runtime table verification failed"
         if not restored then detail = detail .. "; nft rollback failed: " .. (restore_error or "unknown error") end
         return { ok = false, valid = false, error = "configured firewall transaction failed verification", detail = detail }
@@ -478,7 +391,7 @@ local function apply(raw, write_candidate)
     local source_saved, source_error = false, nil
     if compiled_saved then source_saved, source_error = write_atomic(APPLIED_SOURCE, checked.config, 600) end
     if not compiled_saved or not source_saved then
-        local restored, restore_error = restore_snapshot(runtime_tables, current_tables, current)
+        local restored, restore_error = run_transaction(transaction(runtime_tables, current or "", current_tables))
         restore_file(APPLIED_COMPILED, previous_compiled)
         restore_file(APPLIED_SOURCE, previous_source)
         local detail = compiled_error or source_error or "cannot save applied firewall snapshot"
@@ -521,15 +434,13 @@ local function dispatch(command, args)
         return apply(source, false)
     elseif command == "firewall-read" then return read()
     elseif command == "firewall-validate" then
-        local result = validate(args[1]); result.compiled = nil; result.load_base = nil; result.load_batches = nil; return result
+        local result = validate(args[1]); result.compiled = nil; return result
     elseif command == "firewall-save" then return save(args[1])
     elseif command == "firewall-apply" then return apply(args[1], true)
     elseif command == "firewall-validate-file" or command == "firewall-save-file" or command == "firewall-apply-file" then
         local raw, read_error = read_rpc_input(args[1])
         if raw == nil then return { ok = false, valid = false, error = read_error } end
-        if command == "firewall-validate-file" then
-            local result = validate(raw); result.compiled = nil; result.load_base = nil; result.load_batches = nil; return result
-        end
+        if command == "firewall-validate-file" then local result = validate(raw); result.compiled = nil; return result end
         if command == "firewall-save-file" then return save(raw) end
         return apply(raw, true)
     end
