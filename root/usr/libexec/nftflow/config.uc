@@ -393,6 +393,19 @@ function recover_runtime(previous) {
 function apply(raw) {
     let checked = validate(raw);
     if (!checked.valid) return public_validation(checked);
+
+    if (!quiet('/etc/init.d/nftflow running')) {
+        return {
+            ok: true,
+            valid: true,
+            applied: false,
+            config: checked.config,
+            applied_config: read_text(APPLIED_CONFIG) || '',
+            applied_path: APPLIED_CONFIG,
+            detail: 'NftFlow is stopped; runtime was not changed.'
+        };
+    }
+
     let previous = read_text(APPLIED_CONFIG);
     let saved = atomic_write(APPLIED_CONFIG, checked.runtime_config, 0o600);
     if (!saved.ok) return { ok: false, valid: true, error: saved.error };
