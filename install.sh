@@ -1,9 +1,10 @@
 #!/bin/sh
 set -eu
 
-BASE='https://github.com/madwind/luci-app-nftflow/releases'
+API='https://api.github.com/repos/madwind/luci-app-nftflow'
 TMP="/tmp/nftflow-install.$$"
-MANIFEST="$TMP/nftflow-update.json"
+RELEASE="$TMP/release.json"
+COMPACT="$TMP/release.compact.json"
 
 die() {
     printf '[ERROR] %s\n' "$*" >&2
@@ -18,32 +19,47 @@ mkdir -p "$TMP"
 trap 'rm -rf "$TMP"' EXIT HUP INT TERM
 
 printf 'Downloading NftFlow release metadata...\n'
-wget -q -O "$MANIFEST" "$BASE/latest/download/nftflow-update.json" || die 'failed to download release metadata'
+wget -O "$RELEASE" "$API/releases/latest" || die 'failed to download release metadata'
 
-json_get() {
-    awk -F '"' -v key="$1" '$2 == key { print $4; exit }' "$MANIFEST"
-}
+tr -d ' \t\r\n' < "$RELEASE" > "$COMPACT" || die 'failed to parse release metadata'
 
-VERSION="$(json_get version)"
-TAG="$(json_get tag)"
-ASSET="$(json_get asset)"
-SHA256="$(json_get sha256)"
+TAG="$(sed -n 's/.*"tag_name":"\([^"]*\)".*/\1/p' "$COMPACT")"
+ASSET_LINE="$(
+    sed 's#{"url":"https://api.github.com/repos/madwind/luci-app-nftflow/releases/assets/#\
+&#g' "$COMPACT" |
+        grep '"name":"luci-app-nftflow-[^"]*\.apk"' |
+        head -n 1
+)"
 
-[ -n "$VERSION" ] || die 'missing version in release metadata'
-[ -n "$TAG" ] || die 'missing tag in release metadata'
-[ -n "$ASSET" ] || die 'missing asset in release metadata'
-[ -n "$SHA256" ] || die 'missing sha256 in release metadata'
+[ -n "$ASSET_LINE" ] || die 'release APK asset not found'
+
+ASSET_URL="$(printf '%s\n' "$ASSET_LINE" | sed -n 's#^{"url":"\([^"]*\)".*#\1#p')"
+ASSET="$(printf '%s\n' "$ASSET_LINE" | sed -n 's#.*"name":"\([^"]*\.apk\)".*#\1#p')"
+SHA256="$(printf '%s\n' "$ASSET_LINE" | sed -n 's#.*"digest":"sha256:\([0-9A-Fa-f]*\)".*#\1#p')"
+VERSION="${TAG#v}"
+
+[ -n "$TAG" ] || die 'missing release tag'
+[ -n "$VERSION" ] || die 'missing release version'
+[ -n "$ASSET_URL" ] || die 'missing release asset URL'
+[ -n "$ASSET" ] || die 'missing release asset name'
+[ -n "$SHA256" ] || die 'missing release asset SHA256'
 
 case "$TAG" in *[!A-Za-z0-9._+-]*) die 'invalid release tag' ;; esac
 case "$ASSET" in luci-app-nftflow-*.apk) ;; *) die 'invalid package asset' ;; esac
 case "$SHA256" in *[!0-9A-Fa-f]*) die 'invalid SHA256' ;; esac
 [ "${#SHA256}" -eq 64 ] || die 'invalid SHA256 length'
 
+case "$ASSET_URL" in
+    "$API/releases/assets/"*) ;;
+    *) die 'invalid release asset URL' ;;
+esac
+ASSET_ID="${ASSET_URL##*/}"
+case "$ASSET_ID" in ''|*[!0-9]*) die 'invalid release asset ID' ;; esac
+
 PACKAGE="$TMP/$ASSET"
-URL="$BASE/download/$TAG/$ASSET"
 
 printf 'Downloading NftFlow %s...\n' "$VERSION"
-wget -O "$PACKAGE" "$URL" || die 'package download failed'
+wget --header='Accept: application/octet-stream' -O "$PACKAGE" "$ASSET_URL" || die 'package download failed'
 
 ACTUAL="$(sha256sum "$PACKAGE" | awk '{ print $1 }')"
 [ "$ACTUAL" = "$SHA256" ] || die 'SHA256 verification failed'
