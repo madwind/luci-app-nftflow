@@ -53,7 +53,7 @@ jobs:
           while IFS= read -r file; do
             i=$((i + 1))
             echo "Checking $file"
-            ucode -c -o "$RUNNER_TEMP/ucode-bytecode/$i.uc" "$file"
+            ucode -cdynlink=fs,dynlink=uci -o "$RUNNER_TEMP/ucode-bytecode/$i.uc" "$file"
           done < <(find root/usr/libexec/nftflow root/usr/share/rpcd/ucode -type f -name '*.uc' -print | sort)
           test "$i" -gt 0
 
