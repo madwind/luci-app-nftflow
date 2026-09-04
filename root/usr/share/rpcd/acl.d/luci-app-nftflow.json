@@ -8,6 +8,7 @@
                 "luci.nftflow": [
                     "status",
                     "firewall_read",
+                    "firewall_ready",
                     "firewall_runtime",
                     "firewall_validate",
                     "routing_read",
