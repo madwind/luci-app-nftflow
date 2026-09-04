@@ -248,6 +248,10 @@ const methods = {
         args: {},
         call: request => defer_rpc_helper(request, 'routing-read', 'Routing read')
     },
+    routing_runtime: {
+        args: {},
+        call: request => defer_rpc_helper(request, 'routing-runtime', 'Routing runtime read')
+    },
     routing_validate: {
         args: { config: '' },
         call: request => defer_ctl_file(request, 'routing-validate-file', request_args(request).config || '', 'Routing validation')
