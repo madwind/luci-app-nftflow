@@ -161,6 +161,9 @@ function wait_nftflow_ready() {
     }
     return false;
 }
+function restore_running_service(was_running) {
+    if (was_running && quiet('/etc/init.d/nftflow start')) wait_nftflow_ready();
+}
 function restore_version(path, previous) {
     if (previous == null) { fs.unlink(path); return true; }
     return atomic_write(path, previous, 0o644).ok === true;
@@ -217,13 +220,13 @@ function install(kind) {
 
     if (had_previous && fs.rename(cfg.path, backup) !== true) {
         fs.unlink(stage);
-        if (was_running) { quiet('/etc/init.d/nftflow start'); wait_nftflow_ready(); }
+        restore_running_service(was_running);
         return { ok: false, error: 'cannot preserve previous GeoData file' };
     }
     if (fs.rename(stage, cfg.path) !== true) {
         if (had_previous) fs.rename(backup, cfg.path);
         fs.unlink(stage);
-        if (was_running) { quiet('/etc/init.d/nftflow start'); wait_nftflow_ready(); }
+        restore_running_service(was_running);
         return { ok: false, error: `cannot replace ${cfg.path}` };
     }
     fs.chmod(cfg.path, 0o644);
@@ -233,7 +236,7 @@ function install(kind) {
         fs.unlink(cfg.path);
         if (had_previous) fs.rename(backup, cfg.path);
         restore_version(version_path, old_version);
-        if (was_running) { quiet('/etc/init.d/nftflow start'); wait_nftflow_ready(); }
+        restore_running_service(was_running);
         return { ok: false, error: version_saved.error };
     }
 
@@ -242,11 +245,8 @@ function install(kind) {
         fs.unlink(cfg.path);
         if (had_previous) fs.rename(backup, cfg.path);
         restore_version(version_path, old_version);
-        let recovered = quiet('/etc/init.d/nftflow start') && wait_nftflow_ready();
-        if (!recovered) quiet('/etc/init.d/nftflow stop');
-        return { ok: false, error: recovered
-            ? 'NftFlow rejected uploaded GeoData; previous file was restored'
-            : 'NftFlow rejected uploaded GeoData; previous file was restored but service recovery also failed' };
+        restore_running_service(was_running);
+        return { ok: false, error: 'NftFlow rejected uploaded GeoData; previous file was restored' };
     }
 
     fs.unlink(backup);
