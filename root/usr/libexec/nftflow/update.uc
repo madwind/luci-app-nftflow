@@ -65,7 +65,6 @@ function now() { return time(); }
 function bool(value) { return value === true || value === 1 || value == '1' || value == 'true' || value == 'yes' || value == 'on'; }
 function process_alive(process_pid) { process_pid = int(process_pid || 0); return process_pid > 1 && quiet(`kill -0 ${process_pid}`); }
 function active_status(state) { return state && (state.status == 'starting' || state.status == 'running' || state.status == 'stopping'); }
-function active_state(state) { return active_status(state) && process_alive(state.pid); }
 function claimed_state(state) {
     if (!active_status(state)) return false;
     if (process_alive(state.pid)) return true;
@@ -301,7 +300,7 @@ function recover_nftflow(kind, state, was_running, message) {
 }
 function worker_nftflow(state) {
     if (!state.download_url || !state.sha256 || !state.latest_version) return fail_worker('nftflow', state, 'cached NftFlow check data is incomplete; check updates again');
-    let defer_restart = state.defer_restart === true, was_running = !defer_restart && nftflow_service_running();
+    let was_running = nftflow_service_running();
     let package_path = temporary(`${SOFTWARE_DIR}/${state.asset || 'luci-app-nftflow.apk'}`);
     set_phase('nftflow', state, 'downloading', 'Downloading checked NftFlow package');
     let fetched = fetch_file(state.download_url, package_path, 15);
@@ -317,8 +316,7 @@ function worker_nftflow(state) {
         if (!quiet('/etc/init.d/nftflow stop')) { fs.unlink(package_path); return fail_worker('nftflow', state, 'Unable to stop NftFlow before package installation'); }
     }
     set_phase('nftflow', state, 'installing', 'Installing NftFlow package');
-    let prefix = defer_restart ? 'NFTFLOW_DEFER_RESTART=1 ' : '';
-    let installed = capture(`${prefix}apk --network=no add --allow-untrusted --upgrade ${q(package_path)}`); fs.unlink(package_path);
+    let installed = capture(`NFTFLOW_DEFER_RESTART=1 apk --network=no add --allow-untrusted --upgrade ${q(package_path)}`); fs.unlink(package_path);
     if (!installed.ok) {
         let detail = compact_error(installed.output);
         if (was_running && !recover_nftflow('nftflow', state, true, 'Restoring NftFlow after failed package installation'))
@@ -334,7 +332,7 @@ function worker_nftflow(state) {
 function worker_xray(state) {
     let expected = state.latest_version;
     if (!expected) return fail_worker('xray', state, 'cached Xray check data is incomplete; check updates again');
-    let defer_restart = state.defer_restart === true, was_running = !defer_restart && nftflow_service_running();
+    let was_running = nftflow_service_running();
     let download_dir = temporary(`${SOFTWARE_DIR}/xray-cache`);
     if (!mkdirp(download_dir)) return fail_worker('xray', state, 'cannot create xray-core download directory');
     let constraint = `${PACKAGES.xray}=${expected}`;
@@ -460,7 +458,7 @@ function restore_geo(kind, cfg, backup, had_previous, old_version, state) {
 function worker_geo(state) {
     let kind = state.kind, cfg = geo_config(kind);
     if (!cfg) return fail_worker(kind, state, 'unsupported GeoData kind');
-    let defer_restart = state.defer_restart === true, was_running = !defer_restart && nftflow_service_running();
+    let was_running = nftflow_service_running();
     state.pid = pid(); state.status = 'running'; state.phase = 'starting'; save_state(kind, state);
     if (state.check_ok !== true || state.update_available !== true || !state.latest_version || !state.download_url || !state.checksum_url)
         return fail_worker(kind, state, 'no complete checked GeoData update is available; check updates first');
@@ -542,7 +540,7 @@ function geo_status() {
     return { ok: true, ready: assets.geoip.ready && assets.geosite.ready, assets, update };
 }
 
-function start(kind, defer_restart) {
+function start(kind) {
     if (!valid_kind(kind)) return { ok: false, kind, error: 'unsupported update kind' };
     if (!mkdirp(SOFTWARE_DIR) || (geo_kind(kind) && (!mkdirp(RUNTIME) || !mkdirp(LOG_DIR)))) return { ok: false, kind, error: 'cannot create update directory' };
     let state = geo_kind(kind) ? geo_load_state(kind) : normalize_state(kind, read_state(kind));
@@ -554,7 +552,7 @@ function start(kind, defer_restart) {
     remove_lock(kind);
     if (!quiet(`mkdir ${q(lock_path(kind))}`)) { release_global_lock(kind); return { ok: false, kind, status: 'busy', error: 'another update is starting' }; }
     state.ok = true; state.status = 'starting'; state.phase = 'starting'; state.started = now(); state.finished = null; state.pid = null; state.updated = false;
-    state.post_check_error = null; state.error = null; state.message = 'Update started'; state.defer_restart = defer_restart === true;
+    state.post_check_error = null; state.error = null; state.message = 'Update started';
     if (software_kind(kind)) state.installed_version = installed_version(PACKAGES[kind]) || state.installed_version;
     let saved = save_state(kind, state);
     if (!saved.ok) { remove_lock(kind); release_global_lock(kind); return { ok: false, kind, status: 'failed', error: saved.error || 'cannot save update state' }; }
@@ -608,11 +606,15 @@ function stop(kind) {
     if (!valid_kind(kind)) return { ok: false, kind, error: 'unsupported update kind' };
     let state = normalize_state(kind, read_state(kind)), active = active_status(state), process_pid = int(state.pid || 0);
     if (!active || process_pid <= 1 || !process_alive(process_pid)) return { ok: false, kind, status: state.status, error: 'no active update to stop' };
+    if (state.batch === true) return { ok: false, kind, status: state.status, error: 'automatic update batches cannot be stopped from a component action' };
     if (state.phase != 'starting' && state.phase != 'downloading' && state.phase != 'verifying')
         return { ok: false, kind, status: state.status, error: 'update cannot be stopped after the maintenance phase has started' };
     if (!worker_matches(process_pid, kind)) return { ok: false, kind, status: state.status, error: 'refusing to stop an unexpected process' };
     state.status = 'stopping'; state.phase = 'stopping'; state.message = 'Stopping update'; state.error = null; save_state(kind, state);
-    if (!terminate_tree(process_pid)) { state.ok = false; state.status = 'failed'; state.phase = 'failed'; state.finished = now(); state.error = 'unable to stop update worker'; save_state(kind, state); return state; }
+    if (!terminate_tree(process_pid)) {
+        state.ok = false; state.status = 'running'; state.phase = 'stopping'; state.pid = process_pid;
+        state.error = 'unable to stop update worker'; state.message = 'Unable to stop update'; save_state(kind, state); return state;
+    }
     remove_lock(kind); release_global_lock(kind); state.ok = true; state.status = 'stopped'; state.phase = 'stopped'; state.finished = now(); state.pid = null; state.progress = null; state.updated = false; state.error = null; state.message = 'Update stopped';
     let saved = save_state(kind, state); return saved.ok ? state : { ok: false, kind, status: 'stopped', error: saved.error || 'cannot save stopped update state' };
 }
@@ -688,16 +690,16 @@ function restore_snapshot_geo(kind) {
 function restore_all_geo() { for (let kind in [ 'geoip', 'geosite' ]) if (!restore_snapshot_geo(kind)) quiet(`logger -t nftflow-update ${q(`${kind} rollback after batch restart failure failed`)}`); }
 function clear_batch_files() { quiet(`rm -rf ${q(BATCH_BACKUP)} ${q(BATCH_STAGE)}`); }
 function batch_state(kind) {
-    let state = read_state(kind); state.pid = pid(); state.started = int(state.started || 0) || now(); return state;
+    let state = read_state(kind); state.pid = pid(); state.started = int(state.started || 0) || now(); state.batch = true; return state;
 }
 function batch_fail(kind, state, message) {
-    state.ok = false; state.status = 'failed'; state.phase = 'failed'; state.finished = now(); state.pid = null; state.updated = false; state.error = message; state.message = 'Automatic update failed'; save_state(kind, state);
+    state.ok = false; state.status = 'failed'; state.phase = 'failed'; state.finished = now(); state.pid = null; state.updated = false; state.error = message; state.message = 'Automatic update failed'; state.batch = false; save_state(kind, state);
 }
 function batch_stop(kind, state, message) {
-    state.ok = true; state.status = 'stopped'; state.phase = 'stopped'; state.finished = now(); state.pid = null; state.updated = false; state.error = null; state.message = message; save_state(kind, state);
+    state.ok = true; state.status = 'stopped'; state.phase = 'stopped'; state.finished = now(); state.pid = null; state.updated = false; state.error = null; state.message = message; state.batch = false; save_state(kind, state);
 }
 function batch_done(kind, state, message) {
-    state.ok = true; state.status = 'done'; state.phase = 'done'; state.finished = now(); state.pid = null; state.updated = true; state.last_update = state.finished; state.error = null; state.message = message; save_state(kind, state);
+    state.ok = true; state.status = 'done'; state.phase = 'done'; state.finished = now(); state.pid = null; state.updated = true; state.last_update = state.finished; state.error = null; state.message = message; state.batch = false; save_state(kind, state);
 }
 function prepare_batch_nftflow(state) {
     let path = `${BATCH_STAGE}/nftflow.apk`; fs.unlink(path);
@@ -740,11 +742,14 @@ function prepare_batch(kind, state) {
     return prepare_batch_geo(kind, state);
 }
 function apply_batch_geo(kind, state, prepared) {
-    let cfg = geo_config(kind); if (!cfg || !mkdirp(fs.dirname(cfg.path) || '.')) return { ok: false, error: 'cannot prepare GeoData destination' };
+    let cfg = geo_config(kind), directory = cfg ? fs.dirname(cfg.path) || '.' : null;
+    if (!cfg || !mkdirp(directory)) return { ok: false, error: 'cannot prepare GeoData destination' };
     set_phase(kind, state, 'applying', 'Installing prepared GeoData release');
-    fs.unlink(cfg.path);
-    if (fs.rename(prepared.path, cfg.path) !== true) return { ok: false, error: `cannot atomically replace ${cfg.path}` };
-    fs.chmod(cfg.path, 0o644);
+    let staged = temporary(`${cfg.path}.nftflow-batch`);
+    fs.unlink(staged);
+    if (!quiet(`cp ${q(prepared.path)} ${q(staged)}`)) { fs.unlink(staged); return { ok: false, error: `cannot stage ${cfg.path} for atomic replacement` }; }
+    fs.chmod(staged, 0o644);
+    if (fs.rename(staged, cfg.path) !== true) { fs.unlink(staged); return { ok: false, error: `cannot atomically replace ${cfg.path}` }; }
     let saved = write_geo_version(kind, prepared.version); if (!saved.ok || read_geo_version(kind) != prepared.version) return { ok: false, error: saved.error || 'installed GeoData version metadata failed local verification' };
     state.local_version = prepared.version; state.source_version = prepared.version; state.latest_version = prepared.version; state.update_available = false; state.post_check_error = null;
     return { ok: true };
@@ -767,7 +772,7 @@ function apply_batch(kind, state, prepared) {
     return apply_batch_geo(kind, state, prepared);
 }
 function auto_run() {
-    let check_failed = false, selected = [], states = {}, prepared = {}, applied = [];
+    let check_failed = false, selected = [], states = {}, prepared = {}, applied = {}, applied_count = 0;
     clear_batch_files();
     for (let kind in [ 'nftflow', 'xray', 'geoip', 'geosite' ]) {
         let result = check(kind);
@@ -804,17 +809,23 @@ function auto_run() {
     for (let kind in selected) {
         let result = apply_batch(kind, states[kind], prepared[kind]);
         if (!result.ok) { failed_kind = kind; failure = result.error || 'automatic update apply failed'; batch_fail(kind, states[kind], failure); break; }
-        push(applied, kind);
+        applied[kind] = true; applied_count++;
     }
     if (failed_kind) {
         restore_all_geo();
         for (let kind in selected) {
             if (kind == failed_kind) continue;
-            if (index(applied, kind) >= 0 && software_kind(kind)) { append_post_error(states[kind], 'Automatic update batch did not complete.'); batch_done(kind, states[kind], `${kind} updated before batch failure`); }
-            else batch_stop(kind, states[kind], 'Automatic update batch aborted');
+            if (applied[kind] === true && software_kind(kind)) {
+                append_post_error(states[kind], 'Automatic update batch did not complete.');
+                batch_done(kind, states[kind], `${kind} updated before batch failure`);
+            } else if (applied[kind] === true && geo_kind(kind)) {
+                batch_fail(kind, states[kind], 'GeoData update was rolled back because the automatic update batch did not complete');
+            } else {
+                batch_stop(kind, states[kind], 'Automatic update batch aborted');
+            }
         }
         if (was_running && (!quiet('/etc/init.d/nftflow start') || !wait_nftflow_ready())) { quiet('/etc/init.d/nftflow stop'); quiet(`logger -t nftflow-update ${q('NftFlow recovery after automatic update failure did not reach ready state; service was left stopped')}`); }
-        clear_batch_files(); release_global_lock('batch'); return { ok: false, updated: length(applied) > 0, error: failure };
+        clear_batch_files(); release_global_lock('batch'); return { ok: false, updated: applied_count > 0, error: failure };
     }
     if (was_running) {
         for (let kind in selected) set_phase(kind, states[kind], 'restarting', 'Starting NftFlow after automatic update batch');
@@ -837,7 +848,7 @@ function dispatch(command, args) {
     case 'status': return software_status();
     case 'geo-status': return geo_status();
     case 'check': return check(args[0]);
-    case 'start': return start(args[0], false);
+    case 'start': return start(args[0]);
     case 'worker': return worker(args[0]);
     case 'stop': return stop(args[0]);
     case 'auto-status': return auto_status();
