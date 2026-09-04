@@ -153,7 +153,7 @@ function parse_source(raw) {
         if (substr(text, open_pos, 1) != '{') return { ok: false, error: 'invalid nft table declaration' };
         let close_pos = matching_brace(text, open_pos);
         if (close_pos == null) return { ok: false, error: 'unbalanced nft table block' };
-        let table = { family: family.value, name: name.value, key: `${family.value} ${name.value}`, start_position: table_kw.start, open_position: open_pos, close_position: close_pos };
+        let table = { family: family.value, name: name.value, key: `${family.value}|${name.value}`, start_position: table_kw.start, open_position: open_pos, close_position: close_pos };
         push(tables, table);
 
         let scan = open_pos + 1;
@@ -178,7 +178,7 @@ function parse_source(raw) {
             if (set_close == null) return { ok: false, error: 'unbalanced nft set block' };
             let spec = {
                 table_family: table.family, table_name: table.name, table_key: table.key,
-                name: set_name.value, key: `${table.key}\0${set_name.value}`,
+                name: set_name.value, key: `${table.family}|${table.name}|${set_name.value}`,
                 start_position: word.start, open_position: set_open, close_position: set_close,
                 type: null, elements_start: null, elements_open: null, elements_close: null, elements_body: null
             };
