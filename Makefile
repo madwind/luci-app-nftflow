@@ -12,16 +12,11 @@ PKG_RELEASE:=$(RELEASE)
 
 LUCI_TITLE:=NftFlow
 LUCI_DESCRIPTION:=NftFlow LuCI manager for network rules, routing, configuration and updates.
-LUCI_DEPENDS:= \
-    +@BUSYBOX_CONFIG_IP \
-    +@BUSYBOX_CONFIG_FEATURE_IP_ROUTE \
-    +@BUSYBOX_CONFIG_FEATURE_IP_RULE
 LUCI_EXTRA_DEPENDS:= \
     luci-base (>=0), \
     nftables (>=0), \
     kmod-nft-fib (>=0), \
     kmod-nft-tproxy (>=0), \
-    uclient-fetch (>=0), \
     xray-core (>=0)
 LUCI_PKGARCH:=all
 
