@@ -48,9 +48,9 @@ function uci_get(option, fallback) {
 function bool(value) { return value === true || value === 1 || value == '1' || value == 'true' || value == 'yes' || value == 'on'; }
 function main_config() {
     let gid = int(uci_get('run_gid', '23333'));
-    if (!gid || gid < 1 || gid > 65535) throw 'run_gid must be between 1 and 65535';
+    if (!gid || gid < 1 || gid > 65535) die('run_gid must be between 1 and 65535');
     let nofile = int(uci_get('nofile', '65536')) || 65536;
-    if (nofile < 1024) throw 'nofile must be at least 1024';
+    if (nofile < 1024) die('nofile must be at least 1024');
     return {
         enabled: bool(uci_get('enabled', '0')),
         xray_bin: uci_get('xray_bin', '/usr/bin/xray'),
