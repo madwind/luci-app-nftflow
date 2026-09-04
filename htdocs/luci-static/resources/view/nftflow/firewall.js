@@ -43,7 +43,7 @@ return view.extend({
         var port = String(uci.get('nftflow', 'main', 'listen_port') || '12345');
         var gid = String(uci.get('nftflow', 'main', 'run_gid') || '23333');
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
-        var runtimeState = E('span', { 'aria-live': 'polite' }, _('Loading...'));
+        var runtimeState = E('span', { 'aria-live': 'polite' }, _('Not loaded'));
         var runtimeRequest = null;
         var runtimeReadyTimer = null;
         var pageVisible = true;
@@ -56,10 +56,15 @@ return view.extend({
             readonly: true
         });
 
-        activeEditor.markSaved(_('# Runtime rules are loading.\n'));
+        activeEditor.markSaved(_('# Runtime rules are not loaded yet.\n'));
 
         function setMessage(state, value) {
             nftflowUi.setState(message, state, value);
+        }
+
+        function invalidateRuntime() {
+            activeEditor.markSaved(_('# Runtime rules are not loaded yet.\n'));
+            nftflowUi.setState(runtimeState, 'notice', _('Not loaded'));
         }
 
         function updateRuntime(next) {
@@ -69,13 +74,11 @@ return view.extend({
             nftflowUi.setState(runtimeState, 'ok', _('Loaded'));
         }
 
-        function refreshRuntime(manual) {
+        function refreshRuntime() {
             if (!pageVisible || runtimeRequest)
                 return runtimeRequest || Promise.resolve();
 
-            if (manual)
-                nftflowUi.setState(runtimeState, 'notice', _('Refreshing...'));
-
+            nftflowUi.setState(runtimeState, 'notice', _('Refreshing...'));
             runtimeRequest = callRuntime().then(function(next) {
                 return nftflowUi.requireOk(next, _('Unable to read runtime Firewall rules.'));
             }).then(function(next) {
@@ -92,7 +95,7 @@ return view.extend({
             return runtimeRequest;
         }
 
-        function refreshRuntimeWhenReady(manual) {
+        function refreshRuntimeWhenReady() {
             if (!pageVisible)
                 return Promise.resolve();
             if (runtimeReadyTimer !== null) {
@@ -107,11 +110,11 @@ return view.extend({
                     nftflowUi.setState(runtimeState, 'notice', _('Waiting for service...'));
                     runtimeReadyTimer = window.setTimeout(function() {
                         runtimeReadyTimer = null;
-                        refreshRuntimeWhenReady(manual);
+                        refreshRuntimeWhenReady();
                     }, 1000);
                     return false;
                 }
-                return refreshRuntime(manual);
+                return refreshRuntime();
             }).catch(function(error) {
                 nftflowUi.setState(runtimeState, 'warn', nftflowUi.errorMessage(error, _('Runtime refresh failed.')));
                 return false;
@@ -187,7 +190,7 @@ return view.extend({
             return callApply(current.getValue()).then(function(next) {
                 return nftflowUi.requireOk(next, _('Unable to apply Firewall rules.'));
             }).then(function(next) {
-                updateRuntime(next);
+                invalidateRuntime();
                 var warning = warningDetail(next);
                 setMessage(warning ? 'warn' : 'ok', warning
                     ? _('Applied to runtime with warning: %s').format(warning)
@@ -213,7 +216,7 @@ return view.extend({
             }).then(function(next) {
                 applied = true;
                 warning = warningDetail(next);
-                updateRuntime(next);
+                invalidateRuntime();
                 return callSave(value);
             }).then(function(next) {
                 return nftflowUi.requireOk(next, _('The Firewall file could not be saved.'));
@@ -257,7 +260,7 @@ return view.extend({
             'type': 'button'
         }, _('Refresh'));
         refreshButton.addEventListener('click', function() {
-            refreshRuntimeWhenReady(true);
+            refreshRuntimeWhenReady();
         });
 
         var runtimeToolbar = E('div', {
@@ -278,7 +281,7 @@ return view.extend({
             E('div', {}, [ E('code', {}, '%geoip:<tag>%') ])
         ]);
 
-        var root = E('div', { 'class': 'cbi-map' }, [
+        return E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Firewall')),
             E('div', { 'class': 'cbi-map-descr' }, _('Edit the nftables source. Apply changes temporarily or apply and save them permanently.')),
             E('div', { 'class': 'cbi-section' }, [ variablesHelp, editor.root, message ]),
@@ -288,12 +291,5 @@ return view.extend({
                 activeEditor.root
             ])
         ]);
-
-        window.setTimeout(function() {
-            if (pageVisible)
-                refreshRuntimeWhenReady(false);
-        }, 0);
-
-        return root;
     }
 });
