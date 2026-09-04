@@ -14,7 +14,6 @@ LUCI_TITLE:=NftFlow
 LUCI_DESCRIPTION:=NftFlow LuCI manager for network rules, routing, configuration and updates.
 LUCI_EXTRA_DEPENDS:= \
     luci-base (>=0), \
-    rpcd-mod-file (>=0), \
     nftables (>=0), \
     kmod-nft-fib (>=0), \
     kmod-nft-tproxy (>=0), \
