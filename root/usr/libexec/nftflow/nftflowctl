@@ -96,12 +96,12 @@ fi
 case "$1" in
     config-read|config-validate|config-validate-file|config-save|config-save-file|config-apply|config-apply-file|config-prepare-file)
         exec /usr/bin/ucode "$CONFIG_CTL" "$@" ;;
-    firewall|firewall-read|firewall-validate|firewall-validate-file|firewall-save|firewall-save-file|firewall-apply|firewall-apply-file)
+    firewall|firewall-read|firewall-runtime|firewall-validate|firewall-validate-file|firewall-save|firewall-save-file|firewall-apply|firewall-apply-file)
         exec /usr/bin/ucode "$FIREWALL_CTL" "$@" ;;
     route-apply)
         if [ ! -r "$ROUTING_SOURCE" ] && [ -r "$ROUTING_DEFAULT" ]; then exec /usr/bin/ucode "$ROUTING_CTL" routing-apply "$(cat "$ROUTING_DEFAULT")"; fi
         exec /usr/bin/ucode "$ROUTING_CTL" "$@" ;;
-    route|routing-read|routing-validate|routing-validate-file|routing-save|routing-save-file|routing-apply|routing-apply-file)
+    route|routing-read|routing-runtime|routing-validate|routing-validate-file|routing-save|routing-save-file|routing-apply|routing-apply-file)
         exec /usr/bin/ucode "$ROUTING_CTL" "$@" ;;
     geo)
         case "${2:-}" in
