@@ -70,7 +70,7 @@ routing:
 
 inbounds:
   - tag: tunnel-in
-    port: 12345
+    port: %port%
     protocol: tunnel
     settings:
       network: "tcp,udp"
