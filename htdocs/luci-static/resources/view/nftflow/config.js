@@ -210,8 +210,11 @@ return view.extend({
             setMessage('notice', _('Applying Xray YAML configuration to runtime...'));
             return callConfigApply(current.getValue()).then(function(next) {
                 return nftflowUi.requireOk(next, _('Unable to apply the Xray YAML configuration.'));
-            }).then(function() {
-                setMessage('ok', _('Applied to runtime; the saved YAML file was not changed.'));
+            }).then(function(next) {
+                if (next.applied === false)
+                    setMessage('notice', _('NftFlow is stopped; runtime was not changed.'));
+                else
+                    setMessage('ok', _('Applied to runtime; the saved YAML file was not changed.'));
                 return true;
             }).catch(function(error) {
                 setMessage('error', nftflowUi.errorMessage(error, _('Unable to apply the Xray YAML configuration.')));
@@ -224,19 +227,23 @@ return view.extend({
                 return Promise.resolve(false);
 
             var applied = false;
+            var runtimeApplied = false;
             var value = current.getValue();
             setMessage('notice', _('Applying Xray YAML configuration and saving the file...'));
 
             return callConfigApply(value).then(function(next) {
                 return nftflowUi.requireOk(next, _('Unable to apply the Xray YAML configuration.'));
-            }).then(function() {
+            }).then(function(next) {
                 applied = true;
+                runtimeApplied = next.applied !== false;
                 return callConfigSave(value);
             }).then(function(next) {
                 return nftflowUi.requireOk(next, _('The Xray YAML file could not be saved.'));
             }).then(function(next) {
                 current.markSaved(next.config === undefined ? value : next.config);
-                setMessage('ok', _('Applied to runtime and saved to the Xray YAML file.'));
+                setMessage(runtimeApplied ? 'ok' : 'notice', runtimeApplied
+                    ? _('Applied to runtime and saved to the Xray YAML file.')
+                    : _('Saved to the Xray YAML file; NftFlow is stopped, so runtime was not changed.'));
                 return true;
             }).catch(function(error) {
                 var fallback = applied
