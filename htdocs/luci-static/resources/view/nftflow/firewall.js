@@ -7,6 +7,7 @@
 'require nftflow.nftformat as nftflowNftFormat';
 
 var callRead = rpc.declare({ object: 'luci.nftflow', method: 'firewall_read', expect: { '': {} }, reject: true });
+var callReady = rpc.declare({ object: 'luci.nftflow', method: 'firewall_ready', expect: { '': {} }, reject: true });
 var callRuntime = rpc.declare({ object: 'luci.nftflow', method: 'firewall_runtime', expect: { '': {} }, reject: true });
 var callValidate = rpc.declare({ object: 'luci.nftflow', method: 'firewall_validate', params: [ 'config' ], expect: { '': {} }, reject: true });
 var callSave = rpc.declare({ object: 'luci.nftflow', method: 'firewall_save', params: [ 'config' ], expect: { '': {} }, reject: true });
@@ -40,6 +41,7 @@ return view.extend({
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
         var runtimeState = E('span', { 'aria-live': 'polite' }, _('Loading...'));
         var runtimeRequest = null;
+        var runtimeReadyTimer = null;
         var pageVisible = true;
         var editor;
         var activeEditor = nftflowEditor.create({
@@ -84,6 +86,29 @@ return view.extend({
             });
 
             return runtimeRequest;
+        }
+
+        function refreshRuntimeWhenReady(manual) {
+            if (!pageVisible)
+                return Promise.resolve();
+            if (runtimeReadyTimer !== null) {
+                window.clearTimeout(runtimeReadyTimer);
+                runtimeReadyTimer = null;
+            }
+
+            return callReady().then(function(state) {
+                if (state && state.ok === true && state.busy === true) {
+                    nftflowUi.setState(runtimeState, 'notice', _('Waiting for service...'));
+                    runtimeReadyTimer = window.setTimeout(function() {
+                        runtimeReadyTimer = null;
+                        refreshRuntimeWhenReady(false);
+                    }, 1000);
+                    return false;
+                }
+                return refreshRuntime(manual);
+            }).catch(function() {
+                return refreshRuntime(manual);
+            });
         }
 
         function reloadFirewall(current) {
@@ -225,7 +250,7 @@ return view.extend({
             'type': 'button'
         }, _('Refresh'));
         refreshButton.addEventListener('click', function() {
-            refreshRuntime(true);
+            refreshRuntimeWhenReady(true);
         });
 
         var runtimeToolbar = E('div', {
@@ -233,9 +258,11 @@ return view.extend({
             'style': 'display:flex; align-items:center; justify-content:space-between; gap:1em'
         }, [ runtimeState, refreshButton ]);
 
-        refreshRuntime(false);
+        refreshRuntimeWhenReady(false);
         window.addEventListener('pagehide', function() {
             pageVisible = false;
+            if (runtimeReadyTimer !== null)
+                window.clearTimeout(runtimeReadyTimer);
         }, { once: true });
 
         var variablesHelp = E('div', { 'class': 'cbi-section-descr' }, [
