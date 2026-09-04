@@ -1,15 +1,19 @@
 #!/bin/sh
 # Thin dispatcher: each subsystem owns its current implementation.
 
-RUNTIME_CTL=/usr/libexec/nftflow/runtime.lua
-CONFIG_CTL=/usr/libexec/nftflow/config.lua
-FIREWALL_CTL=/usr/libexec/nftflow/firewall.lua
-ROUTING_CTL=/usr/libexec/nftflow/routing.lua
-GEO_STATUS_CTL=/usr/libexec/nftflow/geo-status.lua
+RUNTIME_CTL=/usr/libexec/nftflow/runtime.uc
+CONFIG_CTL=/usr/libexec/nftflow/config.uc
+FIREWALL_CTL=/usr/libexec/nftflow/firewall.uc
+ROUTING_CTL=/usr/libexec/nftflow/routing.uc
+UPDATE_CTL=/usr/libexec/nftflow/update.uc
 FIREWALL_SOURCE=/etc/nftflow/firewall.nft
 FIREWALL_DEFAULT=/usr/share/nftflow/defaults/firewall.nft
 ROUTING_SOURCE=/etc/nftflow/routing.conf
 ROUTING_DEFAULT=/usr/share/nftflow/defaults/routing.conf
+
+run_ucode() {
+    /usr/bin/ucode "$@"
+}
 
 if [ "$1" = "run-guarded" ]; then
     shift
@@ -24,7 +28,7 @@ if [ "$1" = "run-guarded" ]; then
         state_name="$1"
         state_pid="${2:-}"
         state_message="${3:-}"
-        /usr/bin/lua "$RUNTIME_CTL" state "$state_name" "$state_pid" "$state_message" >/dev/null 2>&1 || true
+        run_ucode "$RUNTIME_CTL" state "$state_name" "$state_pid" "$state_message" >/dev/null 2>&1 || true
     }
 
     terminate_child() {
@@ -45,8 +49,8 @@ if [ "$1" = "run-guarded" ]; then
     cleanup() {
         trap - EXIT TERM INT
         if [ "$stop_requested" = "1" ]; then
-            /usr/bin/lua "$FIREWALL_CTL" firewall off >/dev/null 2>&1 || true
-            /usr/bin/lua "$ROUTING_CTL" route del >/dev/null 2>&1 || true
+            run_ucode "$FIREWALL_CTL" firewall off >/dev/null 2>&1 || true
+            run_ucode "$ROUTING_CTL" route del >/dev/null 2>&1 || true
         fi
         terminate_child
         if [ "$stop_requested" = "1" ]; then set_state stopped; else set_state failed "" "${failure_message:-Xray exited unexpectedly}"; fi
@@ -76,18 +80,18 @@ if [ "$1" = "run-guarded" ]; then
     fi
 
     if [ -r "$FIREWALL_SOURCE" ]; then
-        firewall_output="$(/usr/bin/lua "$FIREWALL_CTL" firewall on 2>&1)"; firewall_status=$?
+        firewall_output="$(run_ucode "$FIREWALL_CTL" firewall on 2>&1)"; firewall_status=$?
     elif [ -r "$FIREWALL_DEFAULT" ]; then
-        firewall_output="$(/usr/bin/lua "$FIREWALL_CTL" firewall-apply "$(cat "$FIREWALL_DEFAULT")" 2>&1)"; firewall_status=$?
+        firewall_output="$(run_ucode "$FIREWALL_CTL" firewall-apply "$(cat "$FIREWALL_DEFAULT")" 2>&1)"; firewall_status=$?
     else
         firewall_output="missing firewall source: $FIREWALL_SOURCE and $FIREWALL_DEFAULT"; firewall_status=1
     fi
     [ "$firewall_status" -eq 0 ] || logger -t nftflowctl "firewall startup apply failed: ${firewall_output:-unknown error}"
 
     if [ -r "$ROUTING_SOURCE" ]; then
-        routing_output="$(/usr/bin/lua "$ROUTING_CTL" route-apply 2>&1)"; routing_status=$?
+        routing_output="$(run_ucode "$ROUTING_CTL" route-apply 2>&1)"; routing_status=$?
     elif [ -r "$ROUTING_DEFAULT" ]; then
-        routing_output="$(/usr/bin/lua "$ROUTING_CTL" routing-apply "$(cat "$ROUTING_DEFAULT")" 2>&1)"; routing_status=$?
+        routing_output="$(run_ucode "$ROUTING_CTL" routing-apply "$(cat "$ROUTING_DEFAULT")" 2>&1)"; routing_status=$?
     else
         routing_output="missing routing source: $ROUTING_SOURCE and $ROUTING_DEFAULT"; routing_status=1
     fi
@@ -102,24 +106,24 @@ fi
 
 case "$1" in
     config-read|config-validate|config-validate-file|config-save|config-save-file|config-apply|config-apply-file)
-        exec /usr/bin/lua "$CONFIG_CTL" "$@" ;;
+        exec /usr/bin/ucode "$CONFIG_CTL" "$@" ;;
     firewall)
-        if [ "${2:-on}" = "on" ] && [ ! -r "$FIREWALL_SOURCE" ] && [ -r "$FIREWALL_DEFAULT" ]; then exec /usr/bin/lua "$FIREWALL_CTL" firewall-apply "$(cat "$FIREWALL_DEFAULT")"; fi
-        exec /usr/bin/lua "$FIREWALL_CTL" "$@" ;;
+        if [ "${2:-on}" = "on" ] && [ ! -r "$FIREWALL_SOURCE" ] && [ -r "$FIREWALL_DEFAULT" ]; then exec /usr/bin/ucode "$FIREWALL_CTL" firewall-apply "$(cat "$FIREWALL_DEFAULT")"; fi
+        exec /usr/bin/ucode "$FIREWALL_CTL" "$@" ;;
     firewall-read|firewall-validate|firewall-validate-file|firewall-save|firewall-save-file|firewall-apply|firewall-apply-file)
-        exec /usr/bin/lua "$FIREWALL_CTL" "$@" ;;
+        exec /usr/bin/ucode "$FIREWALL_CTL" "$@" ;;
     route-apply)
-        if [ ! -r "$ROUTING_SOURCE" ] && [ -r "$ROUTING_DEFAULT" ]; then exec /usr/bin/lua "$ROUTING_CTL" routing-apply "$(cat "$ROUTING_DEFAULT")"; fi
-        exec /usr/bin/lua "$ROUTING_CTL" "$@" ;;
+        if [ ! -r "$ROUTING_SOURCE" ] && [ -r "$ROUTING_DEFAULT" ]; then exec /usr/bin/ucode "$ROUTING_CTL" routing-apply "$(cat "$ROUTING_DEFAULT")"; fi
+        exec /usr/bin/ucode "$ROUTING_CTL" "$@" ;;
     route|routing-read|routing-validate|routing-validate-file|routing-save|routing-save-file|routing-apply|routing-apply-file)
-        exec /usr/bin/lua "$ROUTING_CTL" "$@" ;;
+        exec /usr/bin/ucode "$ROUTING_CTL" "$@" ;;
     geo)
         case "${2:-}" in
-            status) exec /usr/bin/lua "$GEO_STATUS_CTL" ;;
+            status) exec /usr/bin/ucode "$UPDATE_CTL" geo-status ;;
             *) printf '%s\n' '{"ok":false,"error":"unsupported GeoData command"}'; exit 1 ;;
         esac ;;
     status|prepare|cleanup|state|action|reload|service-sync)
-        exec /usr/bin/lua "$RUNTIME_CTL" "$@" ;;
+        exec /usr/bin/ucode "$RUNTIME_CTL" "$@" ;;
     *)
         printf '%s\n' '{"ok":false,"error":"unsupported nftflowctl command"}'; exit 1 ;;
 esac
