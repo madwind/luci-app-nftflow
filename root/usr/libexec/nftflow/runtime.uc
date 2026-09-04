@@ -185,9 +185,9 @@ function routing_status() {
 function process_identity(process_pid_value) {
     if (!process_pid_value) return { uid: null, gid: null };
     let status = read_text(`/proc/${process_pid_value}/status`) || '';
-    let uid = match(status, /(?:^|\n)Uid:\s*(\d+)/);
-    let gid = match(status, /(?:^|\n)Gid:\s*(\d+)/);
-    return { uid: uid ? int(uid[1]) : null, gid: gid ? int(gid[1]) : null };
+    let uid = match(status, /(^|\n)Uid:\s*(\d+)/);
+    let gid = match(status, /(^|\n)Gid:\s*(\d+)/);
+    return { uid: uid ? int(uid[2]) : null, gid: gid ? int(gid[2]) : null };
 }
 function procd_state() {
     let result = capture(`ubus -S call service list '{"name":"nftflow"}'`);
