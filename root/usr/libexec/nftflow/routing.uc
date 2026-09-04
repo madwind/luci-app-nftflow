@@ -237,17 +237,23 @@ function read_current() {
     if (raw == null) return { ok: false, error: `cannot read ${SOURCE}`, path: SOURCE };
     let parsed = parse_config(raw);
     if (!parsed.ok) return { ok: false, error: parsed.error, path: SOURCE };
-    let state = parsed.state;
-    let applied_raw = read_text(APPLIED);
-    let applied = applied_raw ? parse_config(applied_raw) : null;
-    let runtime_state = applied && applied.ok ? applied.state : state;
-    let status = state_status(runtime_state);
+    let state = parsed.state, applied_raw = read_text(APPLIED);
     return {
         ok: true, path: SOURCE, config: state.normalized, bytes: length(state.normalized), commands: state.commands,
-        route_commands: state.route_commands, rule_commands: state.rule_commands, active: runtime_text(runtime_state),
-        route_active: status.active, route_ipv4: status.ipv4, route_ipv6: status.ipv6,
+        route_commands: state.route_commands, rule_commands: state.rule_commands,
         ipv6_enabled: state.ipv6_enabled, firewall_mark: state.mark, routing_table: state.table,
         applied_config: applied_raw || '', applied_path: APPLIED, candidate_path: CANDIDATE
+    };
+}
+function runtime_current() {
+    let raw = read_text(APPLIED) || read_text(SOURCE);
+    if (!raw) return { ok: true, active: '# No active policy routing commands are installed.\n', route_active: false, route_ipv4: false, route_ipv6: false };
+    let parsed = parse_config(raw);
+    if (!parsed.ok) return { ok: false, error: parsed.error };
+    let state = parsed.state, status = state_status(state);
+    return {
+        ok: true, active: runtime_text(state), route_active: status.active, route_ipv4: status.ipv4, route_ipv6: status.ipv6,
+        ipv6_enabled: state.ipv6_enabled, firewall_mark: state.mark, routing_table: state.table
     };
 }
 function save(raw) {
@@ -299,10 +305,8 @@ function apply(raw, candidate) {
         return { ok: false, error };
     }
     fs.unlink(LEGACY_OWNERSHIP);
-    let status = state_status(state);
     return {
         ok: true, valid: true, applied: true, config: state.normalized, applied_config: state.normalized,
-        routing_active: runtime_text(state), route_active: status.active, route_ipv4: status.ipv4, route_ipv6: status.ipv6,
         ipv6_enabled: state.ipv6_enabled, policy_route_commands: state.commands, route_commands: state.route_commands,
         rule_commands: state.rule_commands, firewall_mark: state.mark, routing_table: state.table
     };
@@ -326,6 +330,7 @@ function payload(path) {
 
 function dispatch(command, args) {
     if (command == 'routing-read') return read_current();
+    if (command == 'routing-runtime') return runtime_current();
     if (command == 'routing-validate') return validate(args[0]);
     if (command == 'routing-save') return save(args[0]);
     if (command == 'routing-apply') return apply(args[0], true);
@@ -352,12 +357,10 @@ function dispatch(command, args) {
         return apply(raw, false);
     }
     if (command == 'status') {
-        let raw = read_text(APPLIED) || read_text(SOURCE);
-        if (!raw) return { ok: true, active: false, ipv4: false, ipv6: false };
-        let parsed = parse_config(raw);
-        if (!parsed.ok) return { ok: false, error: parsed.error, active: false, ipv4: false, ipv6: false };
-        let state = state_status(parsed.state);
-        return { ok: true, active: state.active, ipv4: state.ipv4, ipv6: state.ipv6 };
+        let current = runtime_current();
+        return current.ok
+            ? { ok: true, active: current.route_active, ipv4: current.route_ipv4, ipv6: current.route_ipv6 }
+            : { ok: false, error: current.error, active: false, ipv4: false, ipv6: false };
     }
     return { ok: false, error: `unsupported routing command: ${command}` };
 }
