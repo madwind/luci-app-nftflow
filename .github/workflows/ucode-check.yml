@@ -3,6 +3,7 @@ name: Ucode Check
 on:
   push:
     branches:
+      - master
       - ucode-migration
     paths:
       - 'root/usr/libexec/nftflow/**'
