@@ -24,6 +24,10 @@ function warningDetail(result) {
     return warnings.filter(Boolean).join('; ');
 }
 
+function runtimeTransitionBusy(state) {
+    return state && state.ok === true && (state.state === 'starting' || state.state === 'stopping');
+}
+
 return view.extend({
     load: function() {
         return Promise.all([
@@ -97,17 +101,20 @@ return view.extend({
             }
 
             return callReady().then(function(state) {
-                if (state && state.ok === true && state.busy === true) {
+                if (!state || state.ok !== true)
+                    throw new Error(resultDetail(state, _('Runtime refresh failed.')));
+                if (runtimeTransitionBusy(state)) {
                     nftflowUi.setState(runtimeState, 'notice', _('Waiting for service...'));
                     runtimeReadyTimer = window.setTimeout(function() {
                         runtimeReadyTimer = null;
-                        refreshRuntimeWhenReady(false);
+                        refreshRuntimeWhenReady(manual);
                     }, 1000);
                     return false;
                 }
                 return refreshRuntime(manual);
-            }).catch(function() {
-                return refreshRuntime(manual);
+            }).catch(function(error) {
+                nftflowUi.setState(runtimeState, 'warn', nftflowUi.errorMessage(error, _('Runtime refresh failed.')));
+                return false;
             });
         }
 
@@ -258,7 +265,6 @@ return view.extend({
             'style': 'display:flex; align-items:center; justify-content:space-between; gap:1em'
         }, [ runtimeState, refreshButton ]);
 
-        refreshRuntimeWhenReady(false);
         window.addEventListener('pagehide', function() {
             pageVisible = false;
             if (runtimeReadyTimer !== null)
@@ -272,7 +278,7 @@ return view.extend({
             E('div', {}, [ E('code', {}, '%geoip:<tag>%') ])
         ]);
 
-        return E('div', { 'class': 'cbi-map' }, [
+        var root = E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Firewall')),
             E('div', { 'class': 'cbi-map-descr' }, _('Edit the nftables source. Apply changes temporarily or apply and save them permanently.')),
             E('div', { 'class': 'cbi-section' }, [ variablesHelp, editor.root, message ]),
@@ -282,5 +288,12 @@ return view.extend({
                 activeEditor.root
             ])
         ]);
+
+        window.setTimeout(function() {
+            if (pageVisible)
+                refreshRuntimeWhenReady(false);
+        }, 0);
+
+        return root;
     }
 });
