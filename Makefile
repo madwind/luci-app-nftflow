@@ -17,6 +17,7 @@ LUCI_EXTRA_DEPENDS:= \
     nftables (>=0), \
     kmod-nft-fib (>=0), \
     kmod-nft-tproxy (>=0), \
+    ip (>=0), \
     xray-core (>=0)
 LUCI_PKGARCH:=all
 
@@ -38,6 +39,7 @@ chmod 0755 \
 	"$${postinst_root}/usr/libexec/nftflow/nftflowctl" \
 	"$${postinst_root}/usr/libexec/nftflow/config.uc" \
 	"$${postinst_root}/usr/libexec/nftflow/firewall.uc" \
+	"$${postinst_root}/usr/libexec/nftflow/firewall-template.uc" \
 	"$${postinst_root}/usr/libexec/nftflow/routing.uc" \
 	"$${postinst_root}/usr/libexec/nftflow/rpc.uc" \
 	"$${postinst_root}/usr/libexec/nftflow/runtime.uc" \
