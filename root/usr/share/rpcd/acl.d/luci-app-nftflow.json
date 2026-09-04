@@ -12,6 +12,7 @@
                     "firewall_runtime",
                     "firewall_validate",
                     "routing_read",
+                    "routing_runtime",
                     "routing_validate",
                     "config_read",
                     "config_validate",
