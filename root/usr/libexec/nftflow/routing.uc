@@ -129,7 +129,7 @@ function route_state(spec) {
         let fields = split(trim(line), /\s+/);
         if (length(fields) < 2) continue;
         if (normalized_prefix(spec.family, fields[1]) != expected) continue;
-        if (fields[0] == 'local' && match(line, /\sdev\s+lo(?:\s|$)/)) exact = true;
+        if (fields[0] == 'local' && match(line, /\sdev\s+lo(\s|$)/)) exact = true;
         else conflict = true;
     }
     return { exact, conflict };
