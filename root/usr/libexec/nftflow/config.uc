@@ -8,6 +8,8 @@ import * as fs from 'fs';
 
 const RUNTIME = '/var/run/nftflow';
 const APPLIED_CONFIG = `${RUNTIME}/config.applied.yaml`;
+const RUNTIME_CONFIG = `${RUNTIME}/config.runtime.yaml`;
+const CTL = '/usr/libexec/nftflow/nftflowctl';
 const EDITOR_MAX_BYTES = 32 * 1024;
 let sequence = 0;
 
@@ -34,6 +36,20 @@ function mkdirp(path) {
 
 function read_text(path) {
     return fs.readfile(path);
+}
+
+function parse_json(raw) {
+    try { return json(raw); } catch (e) { return null; }
+}
+
+function parse_result(output) {
+    let lines = split(trim(output || ''), /\r?\n/);
+    for (let i = length(lines) - 1; i >= 0; i--) {
+        if (!trim(lines[i])) continue;
+        let parsed = parse_json(trim(lines[i]));
+        if (type(parsed) == 'object') return parsed;
+    }
+    return null;
 }
 
 function pid() {
@@ -83,10 +99,12 @@ function uci_get(option, fallback) {
 function main_config() {
     let asset_dir = uci_get('asset_dir', '/usr/share/xray');
     return {
+        xray_bin: uci_get('xray_bin', '/usr/bin/xray'),
         config_file: uci_get('config_file', '/etc/nftflow/config.yaml'),
         asset_dir,
         geoip_file: uci_get('geoip_file', `${asset_dir}/geoip.dat`),
-        geosite_file: uci_get('geosite_file', `${asset_dir}/geosite.dat`)
+        geosite_file: uci_get('geosite_file', `${asset_dir}/geosite.dat`),
+        listen_port: int(uci_get('listen_port', '12345'))
     };
 }
 
@@ -104,6 +122,13 @@ function prepare_source(raw, path) {
     if (index(source, '\0') >= 0) return { ok: false, error: 'configuration contains a NUL byte' };
     if (!trim(source)) return { ok: false, error: 'YAML configuration is empty' };
     return { ok: true, source };
+}
+
+function expand_runtime_placeholders(source, main) {
+    let port = int(main.listen_port || 0);
+    if (port < 1 || port > 65535)
+        return { ok: false, error: 'listen_port must be between 1 and 65535' };
+    return { ok: true, source: replace(source, /%port%/g, `${port}`) };
 }
 
 function strip_yaml_comment(line) {
@@ -263,21 +288,46 @@ function validate_geodata_refs(source, main) {
     return { ok: true };
 }
 
-function validate(raw) {
+function xray_validate(source, main) {
+    if (!mkdirp(RUNTIME)) return { ok: false, error: `cannot create ${RUNTIME}` };
+    sequence++;
+    let path = `${RUNTIME}/config-check.${pid()}.${time()}.${sequence}.yaml`;
+    let saved = atomic_write(path, source, 0o600);
+    if (!saved.ok) return saved;
+    let result = capture(`XRAY_LOCATION_ASSET=${q(main.asset_dir)} ${q(main.xray_bin)} run -test -format yaml -c ${q(path)}`);
+    fs.unlink(path);
+    return result.ok
+        ? { ok: true, detail: trim(result.output || '') }
+        : { ok: false, error: 'Xray configuration test failed', detail: trim(result.output || '') || `xray exited with status ${result.code}` };
+}
+
+function validate(raw, source_path) {
     let main = main_config();
-    let prepared = prepare_source(raw, main.config_file);
+    let prepared = prepare_source(raw, source_path || main.config_file);
     if (!prepared.ok) return { ok: false, valid: false, error: prepared.error };
 
-    let geodata = validate_geodata_refs(prepared.source, main);
+    let expanded = expand_runtime_placeholders(prepared.source, main);
+    if (!expanded.ok) return { ok: false, valid: false, error: expanded.error };
+
+    let geodata = validate_geodata_refs(expanded.source, main);
     if (!geodata.ok) return { ok: false, valid: false, error: geodata.error };
+
+    let tested = xray_validate(expanded.source, main);
+    if (!tested.ok) return { ok: false, valid: false, error: tested.error, detail: tested.detail };
 
     return {
         ok: true,
         valid: true,
         config: prepared.source,
+        runtime_config: expanded.source,
         bytes: length(prepared.source),
-        detail: ''
+        detail: tested.detail || ''
     };
+}
+
+function public_validation(result) {
+    if (type(result) == 'object') delete result.runtime_config;
+    return result;
 }
 
 function read_current() {
@@ -296,28 +346,66 @@ function read_current() {
 
 function save(raw) {
     let main = main_config();
-    let checked = validate(raw);
-    if (!checked.valid) return checked;
+    let checked = validate(raw, main.config_file);
+    if (!checked.valid) return public_validation(checked);
     let saved = atomic_write(main.config_file, checked.config, 0o600);
     if (!saved.ok) return { ok: false, valid: true, error: saved.error };
     return { ok: true, valid: true, config: checked.config, path: main.config_file, bytes: checked.bytes, detail: checked.detail };
 }
 
+function runtime_status() {
+    let result = capture(`${q(CTL)} status`);
+    return result.ok ? parse_result(result.output || '') : null;
+}
+
+function wait_runtime_ready() {
+    let stable = 0;
+    for (let i = 0; i < 8; i++) {
+        let status = runtime_status();
+        if (status && status.ok === true && status.running === true && status.runtime_state == 'ready') {
+            stable++;
+            if (stable >= 2) return true;
+        } else stable = 0;
+        system('sleep 1');
+    }
+    return false;
+}
+
+function restart_runtime(use_override) {
+    let env = 'NFTFLOW_FORCE_START=1';
+    if (use_override) env += ` NFTFLOW_CONFIG_OVERRIDE=${q(APPLIED_CONFIG)}`;
+    return capture(`${env} /etc/init.d/nftflow restart`);
+}
+
+function recover_runtime(previous) {
+    if (!restore_file(APPLIED_CONFIG, previous))
+        return { ok: false, error: 'unable to restore the previous runtime configuration snapshot' };
+    let restarted = restart_runtime(previous != null);
+    if (restarted.ok && wait_runtime_ready()) return { ok: true };
+    quiet('/etc/init.d/nftflow stop');
+    return {
+        ok: false,
+        error: 'previous runtime configuration could not be restored',
+        detail: trim(restarted.output || '')
+    };
+}
+
 function apply(raw) {
     let checked = validate(raw);
-    if (!checked.valid) return checked;
+    if (!checked.valid) return public_validation(checked);
     let previous = read_text(APPLIED_CONFIG);
-    let saved = atomic_write(APPLIED_CONFIG, checked.config, 0o600);
+    let saved = atomic_write(APPLIED_CONFIG, checked.runtime_config, 0o600);
     if (!saved.ok) return { ok: false, valid: true, error: saved.error };
 
-    let restarted = capture(`NFTFLOW_FORCE_START=1 NFTFLOW_CONFIG_OVERRIDE=${q(APPLIED_CONFIG)} /etc/init.d/nftflow restart`);
-    if (!restarted.ok) {
-        restore_file(APPLIED_CONFIG, previous);
+    let restarted = restart_runtime(true);
+    if (!restarted.ok || !wait_runtime_ready()) {
+        let detail = trim(restarted.output || '');
+        let recovered = recover_runtime(previous);
         return {
             ok: false,
             valid: true,
-            error: 'failed to restart NftFlow with the applied YAML configuration',
-            detail: trim(restarted.output || '')
+            error: 'failed to start NftFlow with the applied YAML configuration',
+            detail: [ detail, recovered.ok ? 'Previous runtime configuration restored.' : recovered.error, recovered.detail ].filter(Boolean).join(' ')
         };
     }
 
@@ -330,6 +418,17 @@ function apply(raw) {
         applied_path: APPLIED_CONFIG,
         detail: trim(restarted.output || '')
     };
+}
+
+function prepare_runtime(path) {
+    path = `${path ?? ''}`;
+    let raw = read_text(path);
+    if (raw == null) return { ok: false, error: `cannot read ${path}` };
+    let checked = validate(raw, path);
+    if (!checked.valid) return public_validation(checked);
+    let saved = atomic_write(RUNTIME_CONFIG, checked.runtime_config, 0o600);
+    if (!saved.ok) return { ok: false, error: saved.error };
+    return { ok: true, valid: true, path: RUNTIME_CONFIG, bytes: length(checked.runtime_config) };
 }
 
 function read_rpc_input(path) {
@@ -345,17 +444,19 @@ function dispatch(command, args) {
     case 'config-read':
         return read_current();
     case 'config-validate':
-        return validate(args[0]);
+        return public_validation(validate(args[0]));
     case 'config-save':
         return save(args[0]);
     case 'config-apply':
         return apply(args[0]);
+    case 'config-prepare-file':
+        return prepare_runtime(args[0]);
     case 'config-validate-file':
     case 'config-save-file':
     case 'config-apply-file': {
         let input = read_rpc_input(args[0]);
         if (!input.ok) return { ok: false, valid: false, error: input.error };
-        if (command == 'config-validate-file') return validate(input.raw);
+        if (command == 'config-validate-file') return public_validation(validate(input.raw));
         if (command == 'config-save-file') return save(input.raw);
         return apply(input.raw);
     }
