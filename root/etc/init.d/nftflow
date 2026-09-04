@@ -209,13 +209,11 @@ sync_boot_state() {
 }
 
 reload_service() {
+    load_main
     sync_boot_state || return 1
+    service_process_running || return 0
     if [ "$enabled" = "1" ]; then
-        if service_process_running; then
-            "$CTL" reload
-        else
-            start
-        fi
+        "$CTL" reload
     else
         stop
     fi
