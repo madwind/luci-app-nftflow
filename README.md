@@ -1,6 +1,6 @@
 # luci-app-nftflow
 
-`luci-app-nftflow` is a LuCI network traffic management plugin for OpenWrt. It manages Xray, nftables transparent proxy rules, policy routing, GeoIP/GeoSite data and component updates.
+`luci-app-nftflow` is a LuCI network traffic management plugin for OpenWrt. It manages transparent proxy rules, policy routing, GeoIP/GeoSite data and component updates.
 
 The backend is implemented with OpenWrt native **ucode**. No Lua runtime or LuCI Lua compatibility libraries are required.
 
@@ -17,12 +17,12 @@ The installer downloads the latest release manifest, verifies the APK SHA256, up
 ## Features
 
 - View service status and start, stop, or restart services
-- Edit and validate Xray YAML configuration
+- Edit and validate YAML configuration
 - Edit, validate and transactionally apply nftables firewall rules
 - Expand `%geoip:<tag>%` macros directly from `geoip.dat`
 - Edit and transactionally apply policy routing
 - Download, verify and update GeoIP/GeoSite data
-- Check and update NftFlow and Xray Core
+- Check and update NftFlow and managed components
 - Optional weekly automatic update checks
 
 ## Runtime requirements
