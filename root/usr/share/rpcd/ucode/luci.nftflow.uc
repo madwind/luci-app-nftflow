@@ -19,6 +19,7 @@ const SAVED_FIREWALL = '/etc/nftflow/firewall.nft';
 const DEFAULT_FIREWALL = '/usr/share/nftflow/defaults/firewall.nft';
 const APPLIED_FIREWALL = `${RUNTIME}/firewall.applied.nft`;
 const CANDIDATE_FIREWALL = `${RUNTIME}/firewall.candidate.nft`;
+const STATE_FILE = `${RUNTIME}/state.json`;
 
 function parse_result(output) {
     let lines = split(trim(output || ''), /\r?\n/);
@@ -83,6 +84,38 @@ function read_text(path) {
     let value = file.read('all') || '';
     file.close();
     return value;
+}
+
+function read_json(path) {
+    let raw = read_text(path);
+    if (raw == null || !trim(raw)) return null;
+    try {
+        let value = json(raw);
+        return type(value) == 'object' ? value : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function service_running(name) {
+    if (!ubus) return false;
+    try {
+        let result = ubus.call('service', 'list', { name });
+        let service = result && result[name];
+        if (type(service) != 'object' || type(service.instances) != 'object') return false;
+        for (let instance_name, instance in service.instances)
+            if (type(instance) == 'object' && (instance.running === true || instance.running === 1)) return true;
+    } catch (e) {}
+    return false;
+}
+
+function firewall_ready() {
+    let state = read_json(STATE_FILE) || {};
+    let running = service_running('nftflow');
+    let runtime_state = `${state.state || ''}`;
+    let ready = running && runtime_state == 'ready';
+    let busy = runtime_state == 'starting' || runtime_state == 'stopping' || (running && !ready);
+    return { ok: true, running, ready, busy, state: runtime_state || (running ? 'starting' : 'stopped') };
 }
 
 function firewall_read_effective() {
@@ -190,6 +223,10 @@ const methods = {
     firewall_read: {
         args: {},
         call: () => firewall_read_effective()
+    },
+    firewall_ready: {
+        args: {},
+        call: () => firewall_ready()
     },
     firewall_runtime: {
         args: {},
