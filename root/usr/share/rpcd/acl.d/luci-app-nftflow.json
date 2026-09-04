@@ -21,8 +21,14 @@
             }
         },
         "write": {
+            "cgi-io": [ "upload" ],
+            "file": {
+                "/tmp/nftflow-geoip-upload.dat": [ "write" ],
+                "/tmp/nftflow-geosite-upload.dat": [ "write" ]
+            },
             "uci": [ "nftflow" ],
             "ubus": {
+                "file": [ "write" ],
                 "luci.nftflow": [
                     "config_apply",
                     "config_save",
@@ -37,7 +43,8 @@
                     "update_set_auto",
                     "action",
                     "service_sync"
-                ]
+                ],
+                "luci.nftflow.upload": [ "import" ]
             }
         }
     }
