@@ -81,10 +81,12 @@ function uci_get(option, fallback) {
 }
 
 function main_config() {
+    let asset_dir = uci_get('asset_dir', '/usr/share/xray');
     return {
-        xray_bin: uci_get('xray_bin', '/usr/bin/xray'),
         config_file: uci_get('config_file', '/etc/nftflow/config.yaml'),
-        asset_dir: uci_get('asset_dir', '/usr/share/xray')
+        asset_dir,
+        geoip_file: uci_get('geoip_file', `${asset_dir}/geoip.dat`),
+        geosite_file: uci_get('geosite_file', `${asset_dir}/geosite.dat`)
     };
 }
 
@@ -104,32 +106,178 @@ function prepare_source(raw, path) {
     return { ok: true, source };
 }
 
+function strip_yaml_comment(line) {
+    let single = false, double = false, escaped = false;
+    for (let i = 0; i < length(line); i++) {
+        let c = substr(line, i, 1);
+        if (double) {
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == '"') double = false;
+            continue;
+        }
+        if (single) {
+            if (c == "'") {
+                if (substr(line, i + 1, 1) == "'") i++;
+                else single = false;
+            }
+            continue;
+        }
+        if (c == '#') return substr(line, 0, i);
+        if (c == '"') double = true;
+        else if (c == "'") single = true;
+    }
+    return line;
+}
+
+function geodata_tag_char(c) {
+    return c != null && match(c, /^[A-Za-z0-9_-]$/) != null;
+}
+
+function collect_geodata_refs(source) {
+    let refs = { geoip: {}, geosite: {} };
+    for (let source_line in split(source, '\n')) {
+        let line = strip_yaml_comment(source_line);
+        let lower = lc(line);
+        for (let kind in [ 'geoip', 'geosite' ]) {
+            let needle = `${kind}:`, position = 0;
+            while (position < length(line)) {
+                let rel = index(substr(lower, position), needle);
+                if (rel == null || rel < 0) break;
+                let start = position + rel;
+                let previous = start > 0 ? substr(lower, start - 1, 1) : '';
+                if (previous && match(previous, /^[A-Za-z0-9_]$/)) {
+                    position = start + length(needle);
+                    continue;
+                }
+                let tag_start = start + length(needle), finish = tag_start;
+                while (finish < length(line) && geodata_tag_char(substr(line, finish, 1))) finish++;
+                if (finish > tag_start) {
+                    let tag = substr(line, tag_start, finish - tag_start);
+                    refs[kind][uc(tag)] = tag;
+                }
+                position = finish > tag_start ? finish : tag_start;
+            }
+        }
+    }
+    return refs;
+}
+
+function read_varint_file(file) {
+    let value = 0, multiplier = 1;
+    for (let i = 0; i < 10; i++) {
+        let raw = file.read(1);
+        if (raw == null || length(raw) != 1) return { ok: false, error: 'unexpected end of GeoData file' };
+        let byte = ord(raw, 0);
+        value += (byte % 128) * multiplier;
+        if (byte < 128) return { ok: true, value };
+        multiplier *= 128;
+    }
+    return { ok: false, error: 'invalid protobuf varint' };
+}
+
+function read_varint(data, position) {
+    let value = 0, multiplier = 1;
+    for (let i = 0; i < 10; i++) {
+        let byte = ord(data, position);
+        if (byte == null) return { ok: false, error: 'truncated GeoData entry' };
+        position++;
+        value += (byte % 128) * multiplier;
+        if (byte < 128) return { ok: true, value, position };
+        multiplier *= 128;
+    }
+    return { ok: false, error: 'invalid protobuf varint' };
+}
+
+function validate_geodata_file(path, label, refs) {
+    let requested = [], pending = {};
+    for (let code, original in refs) {
+        pending[code] = original;
+        push(requested, code);
+    }
+    if (!length(requested)) return { ok: true };
+
+    let file = fs.open(path, 'r');
+    if (!file) return { ok: false, error: `${label} data file is missing: ${path}` };
+
+    while (length(requested)) {
+        let field = file.read(1);
+        if (field == null || length(field) == 0) break;
+        if (ord(field, 0) != 10) {
+            file.close();
+            return { ok: false, error: `${label} data file has an unsupported structure: ${path}` };
+        }
+
+        let size = read_varint_file(file);
+        if (!size.ok) {
+            file.close();
+            return { ok: false, error: `${label} data file is invalid: ${size.error}` };
+        }
+        if (size.value < 1 || size.value > 64 * 1024 * 1024) {
+            file.close();
+            return { ok: false, error: `${label} data file contains an invalid entry length` };
+        }
+
+        let prefix_length = min(size.value, 256);
+        let prefix = file.read(prefix_length);
+        if (prefix == null || length(prefix) != prefix_length) {
+            file.close();
+            return { ok: false, error: `${label} data file is truncated: ${path}` };
+        }
+
+        let code = null;
+        if (length(prefix) > 1 && ord(prefix, 0) == 10) {
+            let code_size = read_varint(prefix, 1);
+            if (code_size.ok && code_size.value > 0 && code_size.position + code_size.value <= length(prefix))
+                code = uc(substr(prefix, code_size.position, code_size.value));
+        }
+
+        if (code != null && pending[code] != null) {
+            delete pending[code];
+            let remaining = [];
+            for (let wanted in requested) if (wanted != code) push(remaining, wanted);
+            requested = remaining;
+        }
+
+        let rest = size.value - prefix_length;
+        if (rest > 0 && file.seek(rest, 1) !== true) {
+            file.close();
+            return { ok: false, error: `cannot seek through ${label} data file: ${path}` };
+        }
+    }
+
+    file.close();
+    if (!length(requested)) return { ok: true };
+
+    let missing = [];
+    for (let code in requested) push(missing, `${lc(label)}:${pending[code]}`);
+    return { ok: false, error: `${label} tags are unavailable: ${join(', ', missing)}` };
+}
+
+function validate_geodata_refs(source, main) {
+    let refs = collect_geodata_refs(source);
+    let checked = validate_geodata_file(main.geoip_file, 'GeoIP', refs.geoip);
+    if (!checked.ok) return checked;
+    checked = validate_geodata_file(main.geosite_file, 'GeoSite', refs.geosite);
+    if (!checked.ok) return checked;
+    return { ok: true };
+}
+
 function validate(raw) {
     let main = main_config();
     let prepared = prepare_source(raw, main.config_file);
     if (!prepared.ok) return { ok: false, valid: false, error: prepared.error };
-    if (!quiet(`[ -x ${q(main.xray_bin)} ]`))
-        return { ok: false, valid: false, error: `Xray binary is unavailable: ${main.xray_bin}` };
-    if (!mkdirp(RUNTIME)) return { ok: false, valid: false, error: `cannot create ${RUNTIME}` };
 
-    sequence++;
-    let check_path = `${RUNTIME}/config-check.${pid()}.${time()}.${sequence}.yaml`;
-    let saved = atomic_write(check_path, prepared.source, 0o600);
-    if (!saved.ok) return { ok: false, valid: false, error: saved.error };
+    let geodata = validate_geodata_refs(prepared.source, main);
+    if (!geodata.ok) return { ok: false, valid: false, error: geodata.error };
 
-    let command = `XRAY_LOCATION_ASSET=${q(main.asset_dir)} ${q(main.xray_bin)} run -test -format yaml -config ${q(check_path)}`;
-    let tested = capture(command);
-    fs.unlink(check_path);
-
-    let result = {
-        ok: tested.ok,
-        valid: tested.ok,
+    return {
+        ok: true,
+        valid: true,
         config: prepared.source,
         bytes: length(prepared.source),
-        detail: trim(tested.output || '')
+        detail: ''
     };
-    if (!tested.ok) result.error = 'Xray YAML configuration test failed';
-    return result;
 }
 
 function read_current() {
