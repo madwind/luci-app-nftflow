@@ -139,6 +139,7 @@ function firewall(mode) {
 function dispatch(command, args) {
     if (command == 'firewall') return firewall(args[0]);
     if (command == 'firewall-read') return run_engine('firewall-read', null);
+    if (command == 'firewall-runtime') return run_engine('firewall-runtime', null);
     if (command == 'firewall-validate') return validate_raw(args[0]);
     if (command == 'firewall-save') return save_raw(args[0]);
     if (command == 'firewall-apply') return apply_raw(args[0], false);
