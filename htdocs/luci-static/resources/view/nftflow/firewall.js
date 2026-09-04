@@ -231,15 +231,20 @@ return view.extend({
             pageVisible = false;
         }, { once: true });
 
-        var geoipHelp = E('div', { 'class': 'cbi-section-descr' }, [
-            _('GeoIP macro: put '), E('code', {}, '%geoip:<tag>%'),
-            _(' inside the elements of a named IPv4 or IPv6 address set. The set type selects the address family. Missing tags are ignored with a warning; update GeoData to activate them.')
+        var variablesHelp = E('div', { 'class': 'cbi-section-descr' }, [
+            E('div', {}, _('Available variables:')),
+            E('div', {}, [ E('code', {}, '%port%'), ' — ', _('TPROXY listen port.') ]),
+            E('div', {}, [ E('code', {}, '%gid%'), ' — ', _('Xray process GID.') ]),
+            E('div', {}, [
+                E('code', {}, '%geoip:<tag>%'), ' — ',
+                _('GeoIP CIDRs for the tag. Use inside the elements of a named IPv4 or IPv6 address set; the set type selects the address family. Missing tags are ignored with a warning; update GeoData to activate them.')
+            ])
         ]);
 
         return E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Firewall')),
             E('div', { 'class': 'cbi-map-descr' }, _('Edit the nftables source. Apply changes temporarily or apply and save them permanently.')),
-            E('div', { 'class': 'cbi-section' }, [ geoipHelp, editor.root, message ]),
+            E('div', { 'class': 'cbi-section' }, [ variablesHelp, editor.root, message ]),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Runtime rules')),
                 runtimeToolbar,
