@@ -571,9 +571,9 @@ function worker(kind) {
     return worker_geo(state);
 }
 function software_component_status(kind) {
-    let state = normalize_state(kind, read_state(kind)), active = active_status(state), latest = state.latest_version;
-    let installed = active ? state.installed_version : installed_version(PACKAGES[kind]);
-    let available = active ? state.update_available : (state.check_ok === true && latest ? update_available(installed, latest) : null);
+    let state = normalize_state(kind, read_state(kind)), active = active_status(state), lightweight = active || global_lock_active(), latest = state.latest_version;
+    let installed = lightweight ? state.installed_version : installed_version(PACKAGES[kind]);
+    let available = lightweight ? state.update_available : (state.check_ok === true && latest ? update_available(installed, latest) : null);
     return {
         kind, installed_version: installed, latest_version: latest, update_available: available, no_release: state.no_release === true,
         checked: state.checked, check_ok: state.check_ok, last_check_error: state.last_check_error, last_update: last_update(state),
