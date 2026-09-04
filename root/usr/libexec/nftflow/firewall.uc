@@ -41,10 +41,6 @@ function atomic_write(path, value, mode) {
     if (mode != null) fs.chmod(path, mode);
     return { ok: true };
 }
-function restore_file(path, value) {
-    if (value == null) { fs.unlink(path); return true; }
-    return atomic_write(path, value, 0o600).ok === true;
-}
 function uci_get(option, fallback) {
     let result = capture(`/sbin/uci -q get nftflow.main.${option}`);
     let value = trim(result.output || '');
@@ -571,34 +567,33 @@ function save(raw) {
     let saved = atomic_write(FIREWALL_SOURCE, checked.config, 0o600);
     return saved.ok ? { ok: true, valid: true, path: FIREWALL_SOURCE, config: checked.config, bytes: length(checked.config), warnings: checked.warnings } : { ok: false, error: saved.error };
 }
+function fail_open(error, detail) {
+    let errors = [];
+    if (detail) push(errors, detail);
+    let runtime_tables = managed_tables();
+    let removed = run_transaction(transaction(runtime_tables, '', []));
+    if (!removed.ok) push(errors, `firewall cleanup failed: ${removed.detail || 'unknown error'}`);
+    else if (length(managed_tables())) push(errors, 'firewall cleanup failed: some NftFlow nftables tables are still active');
+    fs.unlink(APPLIED_SOURCE); fs.unlink(APPLIED_COMPILED);
+    return { ok: false, valid: false, error, detail: join('; ', errors) };
+}
 function apply(raw, write_candidate) {
     let source = normalize(raw);
     if (write_candidate) { let candidate = atomic_write(CANDIDATE, source, 0o600); if (!candidate.ok) return { ok: false, error: candidate.error }; }
     let checked = validate(source);
     if (!checked.valid) { delete checked.compiled; return checked; }
     let desired = checked.compiled, desired_tables = checked.tables;
-    let previous_source = read_text(APPLIED_SOURCE), previous_compiled = read_text(APPLIED_COMPILED);
-    let current_tables = managed_tables(), current = previous_compiled;
-    if (current == null && length(current_tables)) current = active_firewall(current_tables, false).active;
+    let current_tables = managed_tables();
     let loaded = run_transaction(transaction(current_tables, desired, desired_tables));
-    if (!loaded.ok) return { ok: false, valid: false, error: 'failed to load configured nftables tables', detail: loaded.detail };
+    if (!loaded.ok) return fail_open('failed to load configured nftables tables', loaded.detail);
     let runtime_tables = managed_tables(), verified = length(runtime_tables) == length(desired_tables);
     if (verified) for (let spec in desired_tables) if (!table_active(spec)) { verified = false; break; }
-    if (!verified) {
-        let restored = run_transaction(transaction(runtime_tables, current || '', current_tables));
-        let detail = 'runtime table verification failed';
-        if (!restored.ok) detail += `; nft rollback failed: ${restored.detail || 'unknown error'}`;
-        return { ok: false, valid: false, error: 'configured firewall transaction failed verification', detail };
-    }
+    if (!verified)
+        return fail_open('configured firewall transaction failed verification', 'runtime table verification failed');
     let compiled_saved = atomic_write(APPLIED_COMPILED, desired, 0o600);
     let source_saved = compiled_saved.ok ? atomic_write(APPLIED_SOURCE, checked.config, 0o600) : { ok: false, error: null };
-    if (!compiled_saved.ok || !source_saved.ok) {
-        let restored = run_transaction(transaction(runtime_tables, current || '', current_tables));
-        restore_file(APPLIED_COMPILED, previous_compiled); restore_file(APPLIED_SOURCE, previous_source);
-        let detail = compiled_saved.error || source_saved.error || 'cannot save applied firewall snapshot';
-        if (!restored.ok) detail += `; nft rollback failed: ${restored.detail || 'unknown error'}`;
-        return { ok: false, valid: false, error: detail };
-    }
+    if (!compiled_saved.ok || !source_saved.ok)
+        return fail_open(compiled_saved.error || source_saved.error || 'cannot save applied firewall snapshot', 'nftables runtime was removed after the snapshot save failed');
     let state = active_firewall(runtime_tables, true);
     return {
         ok: true, applied: true, config: checked.config, applied_config: checked.config,
