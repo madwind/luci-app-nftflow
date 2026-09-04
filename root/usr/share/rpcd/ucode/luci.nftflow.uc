@@ -114,7 +114,7 @@ function firewall_ready() {
     let running = service_running('nftflow');
     let runtime_state = `${state.state || ''}`;
     let ready = running && runtime_state == 'ready';
-    let busy = runtime_state == 'starting' || runtime_state == 'stopping' || (running && !ready);
+    let busy = runtime_state == 'starting' || runtime_state == 'stopping';
     return { ok: true, running, ready, busy, state: runtime_state || (running ? 'starting' : 'stopped') };
 }
 
