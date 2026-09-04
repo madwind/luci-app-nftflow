@@ -16,9 +16,6 @@ const PROBE_TTL = 300;
 const FETCH = '/bin/uclient-fetch';
 const SELF = '/usr/libexec/nftflow/update.uc';
 const SERVICE_STATE = `${RUNTIME}/state.json`;
-const GLOBAL_LOCK = `${SOFTWARE_DIR}/update.lock`;
-const GLOBAL_OWNER = `${GLOBAL_LOCK}/owner.json`;
-const LOCK_STALE_SECONDS = 30;
 const MANIFEST_URL = 'https://github.com/madwind/luci-app-nftflow/releases/latest/download/nftflow-update.json';
 const RELEASE_BASE = 'https://github.com/madwind/luci-app-nftflow/releases/download/';
 const GEOIP_URL = 'https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat';
@@ -65,12 +62,7 @@ function now() { return time(); }
 function bool(value) { return value === true || value === 1 || value == '1' || value == 'true' || value == 'yes' || value == 'on'; }
 function process_alive(process_pid) { process_pid = int(process_pid || 0); return process_pid > 1 && quiet(`kill -0 ${process_pid}`); }
 function active_status(state) { return state && (state.status == 'starting' || state.status == 'running' || state.status == 'stopping'); }
-function claimed_state(state) {
-    if (!active_status(state)) return false;
-    if (process_alive(state.pid)) return true;
-    let started = int(state.started || 0);
-    return state.status == 'starting' && started > 0 && now() - started < LOCK_STALE_SECONDS;
-}
+function operation_active(state) { return active_status(state) && process_alive(state.pid); }
 function compact_error(output) {
     let lines = [];
     for (let line in split(`${output == null ? '' : output}`, /\r?\n/)) if (trim(line)) push(lines, trim(line));
@@ -91,9 +83,7 @@ function valid_kind(kind) { return kind == 'nftflow' || kind == 'xray' || kind =
 function software_kind(kind) { return kind == 'nftflow' || kind == 'xray'; }
 function geo_kind(kind) { return kind == 'geoip' || kind == 'geosite'; }
 function state_path(kind) { return software_kind(kind) ? `${SOFTWARE_DIR}/${kind}.json` : `${RUNTIME}/geo-update-${kind}.json`; }
-function lock_path(kind) { return software_kind(kind) ? `${SOFTWARE_DIR}/${kind}.lock` : `${RUNTIME}/geo-update-${kind}.lock`; }
 function log_path(kind) { return software_kind(kind) ? `${SOFTWARE_DIR}/${kind}.log` : `${LOG_DIR}/geo-update-${kind}.log`; }
-function remove_lock(kind) { quiet(`rmdir ${q(lock_path(kind))}`); }
 function read_state(kind) {
     let value = parse_json(read_text(state_path(kind)) || '');
     if (type(value) != 'object') value = { kind, status: 'idle' };
@@ -105,52 +95,16 @@ function save_state(kind, state) {
     if (!mkdirp(software_kind(kind) ? SOFTWARE_DIR : RUNTIME)) return { ok: false, error: 'cannot create update state directory' };
     return atomic_write(state_path(kind), sprintf('%J\n', state), 0o600);
 }
-function global_lock_info() {
-    let value = parse_json(read_text(GLOBAL_OWNER) || '');
-    return type(value) == 'object' ? value : {};
-}
-function clear_global_lock() {
-    fs.unlink(GLOBAL_OWNER);
-    quiet(`rmdir ${q(GLOBAL_LOCK)}`);
-}
-function global_lock_active() {
-    let stat = fs.stat(GLOBAL_LOCK);
-    if (type(stat) != 'object') return false;
-    let info = global_lock_info(), owner = `${info.owner || ''}`, owner_pid = int(info.pid || 0), started = int(info.started || 0);
-    if (owner == 'batch' && process_alive(owner_pid)) return true;
-    if (valid_kind(owner) && claimed_state(read_state(owner))) return true;
-    if (process_alive(owner_pid)) return true;
-    if (started > 0 && now() - started < LOCK_STALE_SECONDS) return true;
-    return now() - int(stat.mtime || 0) < LOCK_STALE_SECONDS;
-}
-function acquire_global_lock(owner) {
-    if (!mkdirp(SOFTWARE_DIR)) return false;
-    if (!quiet(`mkdir ${q(GLOBAL_LOCK)}`)) {
-        if (global_lock_active()) return false;
-        clear_global_lock();
-        if (!quiet(`mkdir ${q(GLOBAL_LOCK)}`)) return false;
-    }
-    let info = sprintf('%J\n', { owner, pid: pid(), started: now() });
-    if (fs.writefile(GLOBAL_OWNER, info) == null) { clear_global_lock(); return false; }
-    fs.chmod(GLOBAL_OWNER, 0o600);
-    return true;
-}
-function release_global_lock(owner) {
-    let info = global_lock_info(), current = `${info.owner || ''}`;
-    if (current && owner && current != owner) return;
-    clear_global_lock();
-}
 function last_update(state) {
     if (!state) return null;
     let value = int(state.last_update || 0);
     return value || (state.updated === true ? int(state.finished || 0) || null : null);
 }
 function normalize_state(kind, state) {
-    let stale_start = state.status == 'starting' && !state.pid && int(state.started || 0) > 0 && now() - int(state.started || 0) >= LOCK_STALE_SECONDS;
-    if ((active_status(state) && state.pid && !process_alive(state.pid)) || stale_start) {
+    if (active_status(state) && state.pid && !process_alive(state.pid)) {
         state.ok = false; state.status = 'failed'; state.phase = 'failed'; state.finished = now(); state.pid = null; state.updated = false;
         state.error = geo_kind(kind) ? 'GeoData update worker exited unexpectedly' : 'update worker exited unexpectedly';
-        save_state(kind, state); remove_lock(kind); release_global_lock(kind);
+        save_state(kind, state);
     }
     return state;
 }
@@ -229,7 +183,7 @@ function probe_xray() {
 }
 function check_software(kind) {
     let current = normalize_state(kind, read_state(kind));
-    if (global_lock_active() || claimed_state(current)) return { ok: false, kind, error: 'an update is already in progress' };
+    if (operation_active(current)) return { ok: false, kind, error: 'an update is already in progress' };
     let result = kind == 'nftflow' ? probe_nftflow() : probe_xray();
     let state = {
         ok: true, kind, status: 'idle', installed_version: current.installed_version, latest_version: current.latest_version,
@@ -252,7 +206,7 @@ function check_software(kind) {
 function set_phase(kind, state, phase, message) { state.ok = true; state.status = 'running'; state.phase = phase; state.message = message; state.pid = pid(); save_state(kind, state); }
 function fail_worker(kind, state, message) {
     state.ok = false; state.status = 'failed'; state.phase = 'failed'; state.finished = now(); state.error = message || 'update failed'; state.pid = null; state.updated = false;
-    save_state(kind, state); remove_lock(kind); release_global_lock(kind); return state;
+    save_state(kind, state); return state;
 }
 function append_post_error(state, message) { if (!message) return; state.post_check_error = state.post_check_error ? `${state.post_check_error} ${message}` : message; }
 function verify_installed(kind, state, expected) {
@@ -265,7 +219,7 @@ function verify_installed(kind, state, expected) {
 }
 function done_worker(kind, state, message) {
     state.ok = true; state.status = 'done'; state.phase = 'done'; state.finished = now(); state.updated = true; state.last_update = state.finished; state.error = null; state.message = message; state.pid = null;
-    save_state(kind, state); remove_lock(kind); release_global_lock(kind); return state;
+    save_state(kind, state); return state;
 }
 function nftflow_service_running() {
     try {
@@ -388,7 +342,7 @@ function cache_key(url) {
     let result = capture(`printf '%s' ${q(url)} | sha256sum`), found = result.ok ? match(result.output || '', /^([0-9A-Fa-f]+)/) : null;
     return found ? lc(found[1]) : null;
 }
-function cache_paths(url) { let key = cache_key(url); return key ? { path: `${PROBE_CACHE}/${key}.json`, lock: `${PROBE_CACHE}/${key}.lock` } : null; }
+function cache_paths(url) { let key = cache_key(url); return key ? { path: `${PROBE_CACHE}/${key}.json` } : null; }
 function valid_cached(url) {
     let paths = cache_paths(url); if (!paths) return null;
     let st = fs.stat(paths.path);
@@ -397,26 +351,20 @@ function valid_cached(url) {
     if (type(value) != 'object' || value.url != url || !value.remote_version || !value.download_url || !value.checksum_url) return null;
     value.cache_hit = true; return value;
 }
-function acquire_lock(path) {
-    for (let i = 0; i < 50; i++) { if (quiet(`mkdir ${q(path)}`)) return true; system('sleep 0.1'); }
-    return false;
-}
 function probe_geo_remote(url) {
     let cached = valid_cached(url); if (cached) return cached;
     if (!mkdirp(PROBE_CACHE)) return { ok: false, url, error: 'cannot create shared update probe cache' };
     let paths = cache_paths(url); if (!paths) return { ok: false, url, error: 'cannot derive shared update probe cache key' };
-    if (!acquire_lock(paths.lock)) return { ok: false, url, error: 'timed out waiting for shared update probe' };
-    cached = valid_cached(url); if (cached) { quiet(`rmdir ${q(paths.lock)}`); return cached; }
     let result = capture(`${q(FETCH)} -s -T 5 ${q(url)}`);
-    if (!result.ok) { quiet(`rmdir ${q(paths.lock)}`); return { ok: false, url, error: trim(result.output || 'GeoData release probe failed') }; }
+    if (!result.ok) return { ok: false, url, error: trim(result.output || 'GeoData release probe failed') };
     let final_match = match(result.output || '', /(https:\/\/[^\s]+\/releases\/download\/[^\s]+)/);
     let final_url = final_match ? replace(final_match[1], /[\r\n].*$/, '') : null;
     let remote_match = match(final_url || result.output || '', /\/releases\/download\/([^\/\s]+)\//);
     let remote = remote_match ? remote_match[1] : null;
     if (!final_url && remote) final_url = replace(url, '/releases/latest/download/', `/releases/download/${remote}/`);
-    if (!remote || !final_url) { quiet(`rmdir ${q(paths.lock)}`); return { ok: false, url, error: 'unable to determine GeoData release version or pinned download URL' }; }
+    if (!remote || !final_url) return { ok: false, url, error: 'unable to determine GeoData release version or pinned download URL' };
     let value = { ok: true, url, remote_version: remote, download_url: final_url, checksum_url: `${final_url}.sha256sum`, checked: now(), cache_hit: false };
-    atomic_write(paths.path, sprintf('%J\n', value), 0o644); quiet(`rmdir ${q(paths.lock)}`); return value;
+    atomic_write(paths.path, sprintf('%J\n', value), 0o644); return value;
 }
 function probe_geo(kind) {
     let cfg = geo_config(kind); if (!cfg) return { ok: false, kind, error: 'unsupported GeoData kind' };
@@ -433,7 +381,7 @@ function probe_geo(kind) {
 }
 function check_geo(kind) {
     if (!mkdirp(RUNTIME)) return { ok: false, kind, error: 'cannot create GeoData runtime directory' };
-    let state = geo_load_state(kind); if (global_lock_active() || claimed_state(state)) return { ok: false, kind, error: 'an update is already in progress' };
+    let state = geo_load_state(kind); if (operation_active(state)) return { ok: false, kind, error: 'an update is already in progress' };
     let result = probe_geo(kind);
     state.status = 'idle'; state.phase = null; state.progress = null; state.error = null; state.updated = false; state.checked = now(); state.check_ok = result.ok === true; state.last_update = last_update(state);
     if (result.ok === true) {
@@ -544,21 +492,18 @@ function start(kind) {
     if (!valid_kind(kind)) return { ok: false, kind, error: 'unsupported update kind' };
     if (!mkdirp(SOFTWARE_DIR) || (geo_kind(kind) && (!mkdirp(RUNTIME) || !mkdirp(LOG_DIR)))) return { ok: false, kind, error: 'cannot create update directory' };
     let state = geo_kind(kind) ? geo_load_state(kind) : normalize_state(kind, read_state(kind));
-    if (claimed_state(state)) { state.ok = true; return state; }
+    if (operation_active(state)) { state.ok = true; return state; }
     if (state.check_ok !== true || state.update_available !== true) return { ok: false, kind, error: 'no checked update is available; run Check updates first' };
     if (kind == 'nftflow' && (!state.download_url || !state.sha256 || !state.latest_version)) return { ok: false, kind, error: 'cached NftFlow check data is incomplete; check updates again' };
     if (geo_kind(kind) && (!state.latest_version || !state.download_url || !state.checksum_url)) return { ok: false, kind, error: 'no complete checked GeoData update is available; run Check updates first' };
-    if (!acquire_global_lock(kind)) return { ok: false, kind, status: 'busy', error: 'another update is already active or starting' };
-    remove_lock(kind);
-    if (!quiet(`mkdir ${q(lock_path(kind))}`)) { release_global_lock(kind); return { ok: false, kind, status: 'busy', error: 'another update is starting' }; }
     state.ok = true; state.status = 'starting'; state.phase = 'starting'; state.started = now(); state.finished = null; state.pid = null; state.updated = false;
     state.post_check_error = null; state.error = null; state.message = 'Update started';
     if (software_kind(kind)) state.installed_version = installed_version(PACKAGES[kind]) || state.installed_version;
     let saved = save_state(kind, state);
-    if (!saved.ok) { remove_lock(kind); release_global_lock(kind); return { ok: false, kind, status: 'failed', error: saved.error || 'cannot save update state' }; }
+    if (!saved.ok) return { ok: false, kind, status: 'failed', error: saved.error || 'cannot save update state' };
     let command = `/usr/bin/ucode ${q(SELF)} worker ${q(kind)} </dev/null >>${q(log_path(kind))} 2>&1 & echo $!`;
     let proc = fs.popen(command, 'r'), worker_pid = proc ? int(trim(proc.read('line') || '0')) : 0; if (proc) proc.close();
-    if (!worker_pid) { remove_lock(kind); release_global_lock(kind); state.ok = false; state.status = 'failed'; state.phase = 'failed'; state.error = 'unable to start update worker'; save_state(kind, state); return state; }
+    if (!worker_pid) { state.ok = false; state.status = 'failed'; state.phase = 'failed'; state.error = 'unable to start update worker'; save_state(kind, state); return state; }
     state.pid = worker_pid; save_state(kind, state); return state;
 }
 function worker(kind) {
@@ -571,7 +516,7 @@ function worker(kind) {
     return worker_geo(state);
 }
 function software_component_status(kind) {
-    let state = normalize_state(kind, read_state(kind)), active = active_status(state), lightweight = active || global_lock_active(), latest = state.latest_version;
+    let state = normalize_state(kind, read_state(kind)), lightweight = active_status(state), latest = state.latest_version;
     let installed = lightweight ? state.installed_version : installed_version(PACKAGES[kind]);
     let available = lightweight ? state.update_available : (state.check_ok === true && latest ? update_available(installed, latest) : null);
     return {
@@ -615,7 +560,7 @@ function stop(kind) {
         state.ok = false; state.status = 'running'; state.phase = 'stopping'; state.pid = process_pid;
         state.error = 'unable to stop update worker'; state.message = 'Unable to stop update'; save_state(kind, state); return state;
     }
-    remove_lock(kind); release_global_lock(kind); state.ok = true; state.status = 'stopped'; state.phase = 'stopped'; state.finished = now(); state.pid = null; state.progress = null; state.updated = false; state.error = null; state.message = 'Update stopped';
+    state.ok = true; state.status = 'stopped'; state.phase = 'stopped'; state.finished = now(); state.pid = null; state.progress = null; state.updated = false; state.error = null; state.message = 'Update stopped';
     let saved = save_state(kind, state); return saved.ok ? state : { ok: false, kind, status: 'stopped', error: saved.error || 'cannot save stopped update state' };
 }
 function check(kind) { return software_kind(kind) ? check_software(kind) : (geo_kind(kind) ? check_geo(kind) : { ok: false, kind, error: 'unsupported update kind' }); }
@@ -781,8 +726,7 @@ function auto_run() {
     for (let kind in [ 'geoip', 'geosite', 'xray', 'nftflow' ]) if (flag(auto_option(kind)) && checked_update_available(kind)) push(selected, kind);
     if (!length(selected)) return { ok: !check_failed, updated: false };
     if (check_failed) return { ok: false, updated: false, error: 'one or more enabled automatic update checks failed' };
-    if (!acquire_global_lock('batch')) return { ok: false, updated: false, error: 'another update is already active or starting' };
-    if (!mkdirp(BATCH_STAGE)) { release_global_lock('batch'); return { ok: false, updated: false, error: 'cannot create automatic update staging directory' }; }
+    if (!mkdirp(BATCH_STAGE)) return { ok: false, updated: false, error: 'cannot create automatic update staging directory' };
     let was_running = nftflow_service_running(), preparation_failed = false;
     for (let kind in selected) {
         let state = batch_state(kind); states[kind] = state;
@@ -791,18 +735,18 @@ function auto_run() {
     }
     if (preparation_failed) {
         for (let kind in selected) if (states[kind] && prepared[kind] && prepared[kind].ok) batch_stop(kind, states[kind], 'Automatic update batch cancelled before maintenance');
-        clear_batch_files(); release_global_lock('batch'); return { ok: false, updated: false };
+        clear_batch_files(); return { ok: false, updated: false };
     }
     for (let kind in selected) if (geo_kind(kind) && !snapshot_geo(kind)) {
         batch_fail(kind, states[kind], 'automatic update backup failed');
         for (let other in selected) if (other != kind) batch_stop(other, states[other], 'Automatic update batch cancelled before maintenance');
-        clear_batch_files(); release_global_lock('batch'); return { ok: false, updated: false };
+        clear_batch_files(); return { ok: false, updated: false };
     }
     if (was_running) {
         for (let kind in selected) set_phase(kind, states[kind], 'stopping', 'Stopping NftFlow for automatic update batch');
         if (!quiet('/etc/init.d/nftflow stop')) {
             for (let kind in selected) batch_fail(kind, states[kind], 'Unable to stop NftFlow for automatic update batch');
-            clear_batch_files(); release_global_lock('batch'); return { ok: false, updated: false };
+            clear_batch_files(); return { ok: false, updated: false };
         }
     }
     let failed_kind = null, failure = null;
@@ -825,7 +769,7 @@ function auto_run() {
             }
         }
         if (was_running && (!quiet('/etc/init.d/nftflow start') || !wait_nftflow_ready())) { quiet('/etc/init.d/nftflow stop'); quiet(`logger -t nftflow-update ${q('NftFlow recovery after automatic update failure did not reach ready state; service was left stopped')}`); }
-        clear_batch_files(); release_global_lock('batch'); return { ok: false, updated: applied_count > 0, error: failure };
+        clear_batch_files(); return { ok: false, updated: applied_count > 0, error: failure };
     }
     if (was_running) {
         for (let kind in selected) set_phase(kind, states[kind], 'restarting', 'Starting NftFlow after automatic update batch');
@@ -836,11 +780,11 @@ function auto_run() {
                 if (geo_kind(kind)) batch_fail(kind, states[kind], recovered ? 'Updated GeoData was rolled back because NftFlow did not reach ready state' : 'Updated GeoData was rolled back and NftFlow recovery also failed');
                 else { append_post_error(states[kind], recovered ? 'NftFlow required GeoData rollback after the automatic update batch.' : 'NftFlow did not recover after the automatic update batch and was left stopped.'); batch_done(kind, states[kind], `${kind} updated with recovery warning`); }
             }
-            clear_batch_files(); release_global_lock('batch'); return { ok: false, updated: true };
+            clear_batch_files(); return { ok: false, updated: true };
         }
     }
     for (let kind in selected) batch_done(kind, states[kind], `${kind} updated successfully`);
-    clear_batch_files(); release_global_lock('batch'); return { ok: true, updated: true };
+    clear_batch_files(); return { ok: true, updated: true };
 }
 
 function dispatch(command, args) {
