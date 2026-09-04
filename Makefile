@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# luci-app-nftflow - hand-written Xray YAML editor for OpenWrt.
+# luci-app-nftflow - native ucode NftFlow manager for OpenWrt.
 
 NFTFLOW_SOURCE_DIR:=$(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
@@ -19,12 +19,8 @@ LUCI_DEPENDS:= \
 LUCI_EXTRA_DEPENDS:= \
     luci-base (>=0), \
     nftables (>=0), \
-    kmod-nft-bridge (>=0), \
     kmod-nft-fib (>=0), \
     kmod-nft-tproxy (>=0), \
-    lua (>=0), \
-    luci-lib-jsonc (>=0), \
-    luci-lib-nixio (>=0), \
     uclient-fetch (>=0), \
     xray-core (>=0)
 LUCI_PKGARCH:=all
@@ -45,9 +41,12 @@ geoip_target="$${postinst_root}/usr/share/xray/geoip.dat"
 chmod 0755 \
 	"$${postinst_root}/etc/init.d/nftflow" \
 	"$${postinst_root}/usr/libexec/nftflow/nftflowctl" \
-	"$${postinst_root}/usr/libexec/nftflow/update.lua" \
-	"$${postinst_root}/usr/libexec/nftflow/update-auto.sh" \
-	"$${postinst_root}/usr/libexec/nftflow/geo-update.lua" 2>/dev/null || true
+	"$${postinst_root}/usr/libexec/nftflow/config.uc" \
+	"$${postinst_root}/usr/libexec/nftflow/firewall.uc" \
+	"$${postinst_root}/usr/libexec/nftflow/routing.uc" \
+	"$${postinst_root}/usr/libexec/nftflow/runtime.uc" \
+	"$${postinst_root}/usr/libexec/nftflow/update.uc" \
+	"$${postinst_root}/usr/libexec/nftflow/update-auto.sh" 2>/dev/null || true
 chmod 0644 \
 	"$${postinst_root}/usr/share/rpcd/ucode/luci.nftflow.uc" \
 	"$${postinst_root}/usr/share/rpcd/acl.d/luci-app-nftflow.json" \
@@ -65,7 +64,7 @@ fi
 	rm -f /tmp/luci-indexcache /tmp/luci-indexcache.* /tmp/luci-modulecache /tmp/luci-modulecache.*
 	rm -rf /tmp/luci-modulecache/
 	/etc/init.d/rpcd reload 2>/dev/null
-	/usr/libexec/nftflow/update-auto.sh sync >/dev/null 2>&1 || logger -t nftflow "cannot synchronize automatic update check schedule"
+	/usr/bin/ucode /usr/libexec/nftflow/update.uc auto-sync >/dev/null 2>&1 || logger -t nftflow "cannot synchronize automatic update check schedule"
 	if [ "$$(uci -q get nftflow.main.enabled 2>/dev/null)" = "1" ]; then
 		/etc/init.d/nftflow enable >/dev/null 2>&1 || true
 		if [ "$${NFTFLOW_DEFER_RESTART:-0}" != "1" ]; then
@@ -87,7 +86,7 @@ define Package/luci-app-nftflow/prerm
             [ -x /usr/libexec/nftflow/nftflowctl ] && /usr/libexec/nftflow/nftflowctl cleanup >/dev/null 2>&1 || true
             ;;
         *)
-            [ -x /usr/libexec/nftflow/update-auto.sh ] && /usr/libexec/nftflow/update-auto.sh remove >/dev/null 2>&1 || true
+            [ -f /usr/libexec/nftflow/update.uc ] && /usr/bin/ucode /usr/libexec/nftflow/update.uc auto-remove >/dev/null 2>&1 || true
             [ -x /etc/init.d/nftflow ] && /etc/init.d/nftflow uninstall >/dev/null 2>&1 || true
             ;;
     esac
