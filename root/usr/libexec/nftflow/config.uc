@@ -399,13 +399,17 @@ function apply(raw) {
 
     let restarted = restart_runtime(true);
     if (!restarted.ok || !wait_runtime_ready()) {
-        let detail = trim(restarted.output || '');
+        let details = [];
+        let restart_detail = trim(restarted.output || '');
+        if (restart_detail) push(details, restart_detail);
         let recovered = recover_runtime(previous);
+        push(details, recovered.ok ? 'Previous runtime configuration restored.' : recovered.error);
+        if (recovered.detail) push(details, recovered.detail);
         return {
             ok: false,
             valid: true,
             error: 'failed to start NftFlow with the applied YAML configuration',
-            detail: [ detail, recovered.ok ? 'Previous runtime configuration restored.' : recovered.error, recovered.detail ].filter(Boolean).join(' ')
+            detail: join(' ', details)
         };
     }
 
