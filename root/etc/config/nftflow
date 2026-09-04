@@ -13,10 +13,10 @@ config nftflow 'main'
     option geoip_auto_update '0'
     option geosite_auto_update '0'
 
-    # The YAML editor owns Xray's complete core configuration. These options
-    # only describe the OpenWrt process and runtime outside that YAML file.
-    # run_gid is the primary group identity used by the Xray process.
-    # Firewall and policy-route commands are edited in their own files.
+    # The YAML editor owns Xray's complete core configuration. Runtime-only
+    # placeholders keep the interception port and process GID synchronized:
+    # %port% resolves to listen_port and %gid% resolves to run_gid.
+    option listen_port '12345'
     option run_gid '23333'
     option run_group 'nftflow'
     option nofile '65536'
