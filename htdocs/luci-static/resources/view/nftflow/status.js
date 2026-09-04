@@ -126,6 +126,7 @@ return view.extend({
         var actionDeadline = 0;
         var lastStatus = null;
         var logStopped = false;
+        var logSuspended = false;
         var pageVisible = true;
         var followLogs = true;
         var logLines = [];
@@ -362,7 +363,18 @@ return view.extend({
             renderLogs();
         }
 
+        function resetLogState() {
+            logLines = [];
+            initialLogsLoaded = false;
+            pendingLiveEntries = [];
+            recentLogKeys = Object.create(null);
+            recentLogKeyOrder = [];
+        }
+
         function loadInitialLogs() {
+            if (logSuspended)
+                return Promise.resolve();
+
             return callLogRead(LOG_FETCH_LINES, false, true).then(function(entries) {
                 mergeInitialLogs(entries);
             }).catch(function(error) {
@@ -429,7 +441,7 @@ return view.extend({
         }
 
         function scheduleReconnect() {
-            if (logStopped || !pageVisible || reconnectTimer !== null)
+            if (logStopped || logSuspended || !pageVisible || reconnectTimer !== null)
                 return;
 
             nftflowUi.setState(logState, 'notice', _('Reconnecting'));
@@ -440,7 +452,7 @@ return view.extend({
         }
 
         function startLogStream() {
-            if (logStopped || !pageVisible || streamController)
+            if (logStopped || logSuspended || !pageVisible || streamController)
                 return Promise.resolve();
 
             if (typeof fetch !== 'function' || typeof TextDecoder !== 'function' || typeof AbortController !== 'function') {
@@ -487,6 +499,27 @@ return view.extend({
             });
         }
 
+        function suspendLogs() {
+            if (logStopped)
+                return false;
+
+            logSuspended = true;
+            stopLogStream();
+            nftflowUi.setState(logState, 'notice', _('Waiting for service'));
+            return true;
+        }
+
+        function resumeLogs() {
+            if (logStopped)
+                return Promise.resolve();
+
+            logSuspended = false;
+            resetLogState();
+            return loadInitialLogs().then(function() {
+                return startLogStream();
+            });
+        }
+
         function waitForLifecycle(action) {
             return callStatus().then(function(result) {
                 updateStatus(result);
@@ -513,6 +546,8 @@ return view.extend({
         }
 
         function serviceAction(action) {
+            var logsPaused = action === 'start' || action === 'restart' ? suspendLogs() : false;
+
             actionInProgress = true;
             actionDeadline = Date.now() + ACTION_TIMEOUT;
             setMessage('notice', _('%s requested...').format(actionText(action)));
@@ -523,9 +558,19 @@ return view.extend({
             }).then(function() {
                 return waitForLifecycle(action);
             }).then(function(result) {
+                if (logsPaused)
+                    return resumeLogs().then(function() { return result; });
+                return result;
+            }).then(function(result) {
                 setMessage('ok', _('NftFlow %s completed.').format(actionText(action)));
                 return result;
             }).catch(function(error) {
+                if (logsPaused) {
+                    logSuspended = false;
+                    logStopped = true;
+                    logStreamButton.textContent = _('Start');
+                    nftflowUi.setState(logState, 'warn', _('Paused'));
+                }
                 setMessage('error', nftflowUi.errorMessage(error, _('Service action failed.')));
                 return false;
             }).then(function(result) {
@@ -562,13 +607,17 @@ return view.extend({
             logStreamButton.textContent = logStopped ? _('Start') : _('Stop');
 
             if (logStopped) {
+                logSuspended = false;
                 stopLogStream();
                 nftflowUi.setState(logState, 'notice', _('Stopped'));
                 return Promise.resolve();
             }
 
-            startLogStream();
-            return Promise.resolve();
+            logSuspended = false;
+            resetLogState();
+            return loadInitialLogs().then(function() {
+                return startLogStream();
+            });
         }));
 
         var initialStatus = data && data[0];
@@ -585,8 +634,13 @@ return view.extend({
             poll.remove(refreshStatus);
         }, { once: true });
 
-        loadInitialLogs();
-        startLogStream();
+        if (initialStatus && initialStatus.ok === true && initialStatus.running === true && initialStatus.runtime_state !== 'ready') {
+            logSuspended = true;
+            nftflowUi.setState(logState, 'notice', _('Waiting for service'));
+        } else {
+            loadInitialLogs();
+            startLogStream();
+        }
 
         var root = E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Overview')),
