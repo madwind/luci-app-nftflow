@@ -31,6 +31,7 @@ var LOG_TAG = 'nftflowctl';
 var LOG_FETCH_LINES = 1000;
 var LOG_LINES = 300;
 var LOG_MAX_BYTES = 96 * 1024;
+var LOG_PENDING_MAX = LOG_FETCH_LINES;
 var LOG_RECONNECT_MS = 2000;
 var ACTION_TIMEOUT = 45000;
 
@@ -107,7 +108,7 @@ return view.extend({
             'autocomplete': 'off',
             'spellcheck': 'false',
             'aria-label': _('Filter runtime log by regular expression'),
-            'title': _('Regular expression, case-insensitive; enter the pattern without /.../.')
+            'title': _('Enter the regular expression without /.../.')
         });
         var logOutput = E('textarea', {
             'id': 'nftflow-runtime-log',
@@ -123,6 +124,7 @@ return view.extend({
         var serviceButtons = [];
         var statusRequest = null;
         var actionInProgress = false;
+        var activeAction = null;
         var actionDeadline = 0;
         var lastStatus = null;
         var logStopped = false;
@@ -130,14 +132,22 @@ return view.extend({
         var followLogs = true;
         var logLines = [];
         var initialLogsLoaded = false;
+        var historySyncInProgress = false;
         var pendingLiveEntries = [];
         var recentLogKeys = Object.create(null);
         var recentLogKeyOrder = [];
         var streamController = null;
         var reconnectTimer = null;
+        var logsDeferred = false;
 
         function setMessage(state, value) {
             nftflowUi.setState(message, state, value);
+        }
+
+        function startupBusy() {
+            if (actionInProgress && (activeAction === 'start' || activeAction === 'restart'))
+                return true;
+            return !!(lastStatus && lastStatus.runtime_state === 'starting');
         }
 
         function updateActionButtons() {
@@ -186,6 +196,8 @@ return view.extend({
                 setMessage('error', result.state_error);
 
             updateActionButtons();
+            if (!startupBusy() && logsDeferred)
+                resumeLogs();
             return result;
         }
 
@@ -227,7 +239,7 @@ return view.extend({
             }
 
             try {
-                var expression = new RegExp(pattern, 'i');
+                var expression = new RegExp(pattern);
                 logFilter.setCustomValidity('');
                 logFilter.removeAttribute('aria-invalid');
                 return expression;
@@ -238,6 +250,10 @@ return view.extend({
             }
         }
 
+        function lineMatchesFilter(line, expression) {
+            return expression === null || (expression !== false && expression.test(line));
+        }
+
         function filteredLogLines() {
             var expression = logFilterExpression();
             if (expression === null)
@@ -246,7 +262,7 @@ return view.extend({
                 return [];
 
             return logLines.filter(function(line) {
-                return expression.test(line);
+                return lineMatchesFilter(line, expression);
             });
         }
 
@@ -264,16 +280,12 @@ return view.extend({
         function appendRenderedLogLine(line) {
             var previous = logLines;
             var next = nftflowUi.boundedLines(previous.concat([ line ]), LOG_LINES, LOG_MAX_BYTES);
-            logLines = next;
-
-            if (logFilter.value.trim() || typeof logOutput.setRangeText !== 'function') {
-                renderLogs();
-                return;
-            }
-
             var retained = Math.max(0, next.length - 1);
             var dropped = previous.length - retained;
             var canAppend = dropped >= 0 && next.length > 0 && next[next.length - 1] === line;
+            var expression = logFilterExpression();
+
+            logLines = next;
 
             if (canAppend) {
                 for (var index = 0; index < retained; index++) {
@@ -284,31 +296,41 @@ return view.extend({
                 }
             }
 
-            if (!canAppend) {
+            if (!canAppend || typeof logOutput.setRangeText !== 'function' || expression === false) {
                 renderLogs();
                 return;
             }
 
             var oldScrollTop = logOutput.scrollTop;
+            var oldScrollHeight = logOutput.scrollHeight;
             var wasAtBottom = followLogs;
+            var droppedVisible = [];
+            var retainedVisible = 0;
 
-            if (dropped > 0) {
-                var removeChars = 0;
-                for (var i = 0; i < dropped; i++) {
-                    removeChars += previous[i].length;
-                    if (i < previous.length - 1)
-                        removeChars++;
-                }
+            for (var i = 0; i < previous.length; i++) {
+                if (!lineMatchesFilter(previous[i], expression))
+                    continue;
+                if (i < dropped)
+                    droppedVisible.push(previous[i]);
+                else
+                    retainedVisible++;
+            }
+
+            if (droppedVisible.length) {
+                var removeChars = droppedVisible.join('\n').length + (retainedVisible ? 1 : 0);
                 logOutput.setRangeText('', 0, removeChars, 'preserve');
             }
 
-            var appendText = (logOutput.value ? '\n' : '') + line;
-            logOutput.setRangeText(appendText, logOutput.value.length, logOutput.value.length, 'preserve');
+            var removedHeight = Math.max(0, oldScrollHeight - logOutput.scrollHeight);
+            if (lineMatchesFilter(line, expression)) {
+                var appendText = (logOutput.value ? '\n' : '') + line;
+                logOutput.setRangeText(appendText, logOutput.value.length, logOutput.value.length, 'preserve');
+            }
 
             if (wasAtBottom)
                 logOutput.scrollTop = logOutput.scrollHeight;
             else
-                logOutput.scrollTop = oldScrollTop;
+                logOutput.scrollTop = Math.max(0, oldScrollTop - removedHeight);
         }
 
         function isRelevantLogEntry(entry) {
@@ -334,40 +356,67 @@ return view.extend({
             return true;
         }
 
-        function appendLogEntry(entry) {
-            if (!isRelevantLogEntry(entry))
-                return;
-            if (!initialLogsLoaded) {
-                pendingLiveEntries.push(entry);
-                return;
-            }
-            if (!rememberLogEntry(entry))
-                return;
+        function queuePendingLogEntry(entry) {
+            pendingLiveEntries.push(entry);
+            if (pendingLiveEntries.length > LOG_PENDING_MAX)
+                pendingLiveEntries.splice(0, pendingLiveEntries.length - LOG_PENDING_MAX);
+        }
 
+        function appendKnownLogEntry(entry) {
+            if (!isRelevantLogEntry(entry) || !rememberLogEntry(entry))
+                return;
             appendRenderedLogLine(formatLogEntry(entry));
         }
 
-        function mergeInitialLogs(entries) {
-            var merged = [];
-
-            (Array.isArray(entries) ? entries : []).concat(pendingLiveEntries).forEach(function(entry) {
-                if (!isRelevantLogEntry(entry) || !rememberLogEntry(entry))
-                    return;
-                merged.push(formatLogEntry(entry));
-            });
-
-            pendingLiveEntries = [];
-            initialLogsLoaded = true;
-            logLines = nftflowUi.boundedLines(merged, LOG_LINES, LOG_MAX_BYTES);
-            renderLogs();
+        function appendLogEntry(entry) {
+            if (!isRelevantLogEntry(entry))
+                return;
+            if (!initialLogsLoaded || historySyncInProgress) {
+                queuePendingLogEntry(entry);
+                return;
+            }
+            appendKnownLogEntry(entry);
         }
 
-        function loadInitialLogs() {
+        function mergeLogHistory(entries) {
+            var combined = (Array.isArray(entries) ? entries : []).concat(pendingLiveEntries);
+            pendingLiveEntries = [];
+            historySyncInProgress = false;
+
+            if (!initialLogsLoaded) {
+                var merged = [];
+                combined.forEach(function(entry) {
+                    if (!isRelevantLogEntry(entry) || !rememberLogEntry(entry))
+                        return;
+                    merged.push(formatLogEntry(entry));
+                });
+                initialLogsLoaded = true;
+                logLines = nftflowUi.boundedLines(merged, LOG_LINES, LOG_MAX_BYTES);
+                renderLogs();
+                return;
+            }
+
+            combined.forEach(appendKnownLogEntry);
+        }
+
+        function syncRecentLogs() {
+            if (!pageVisible || logStopped)
+                return Promise.resolve(false);
+            if (startupBusy()) {
+                deferLogs();
+                return Promise.resolve(false);
+            }
+            if (historySyncInProgress)
+                return Promise.resolve(false);
+
+            historySyncInProgress = true;
             return callLogRead(LOG_FETCH_LINES, false, true).then(function(entries) {
-                mergeInitialLogs(entries);
+                mergeLogHistory(entries);
+                return true;
             }).catch(function(error) {
                 console.warn(error);
-                mergeInitialLogs([]);
+                mergeLogHistory([]);
+                return false;
             });
         }
 
@@ -428,20 +477,35 @@ return view.extend({
             streamController = null;
         }
 
+        function deferLogs() {
+            clearReconnect();
+            logsDeferred = true;
+            if (!streamController && !logStopped)
+                nftflowUi.setState(logState, 'notice', _('Waiting for service...'));
+        }
+
         function scheduleReconnect() {
             if (logStopped || !pageVisible || reconnectTimer !== null)
                 return;
+            if (startupBusy()) {
+                deferLogs();
+                return;
+            }
 
             nftflowUi.setState(logState, 'notice', _('Reconnecting'));
             reconnectTimer = window.setTimeout(function() {
                 reconnectTimer = null;
-                startLogStream();
+                startLogStream(true);
             }, LOG_RECONNECT_MS);
         }
 
-        function startLogStream() {
+        function startLogStream(backfill) {
             if (logStopped || !pageVisible || streamController)
                 return Promise.resolve();
+            if (startupBusy()) {
+                deferLogs();
+                return Promise.resolve();
+            }
 
             if (typeof fetch !== 'function' || typeof TextDecoder !== 'function' || typeof AbortController !== 'function') {
                 nftflowUi.setState(logState, 'warn', _('Unavailable'));
@@ -449,6 +513,7 @@ return view.extend({
             }
 
             clearReconnect();
+            logsDeferred = false;
             nftflowUi.setState(logState, 'notice', _('Connecting'));
 
             var controller = new AbortController();
@@ -468,6 +533,8 @@ return view.extend({
                     throw new Error('log subscription HTTP ' + response.status);
 
                 nftflowUi.setState(logState, 'ok', _('Live'));
+                if (backfill || !initialLogsLoaded)
+                    syncRecentLogs();
 
                 return pumpLogStream(
                     response.body.getReader(),
@@ -476,8 +543,11 @@ return view.extend({
                     { buffer: '' }
                 );
             }).catch(function(error) {
-                if (!controller.signal.aborted)
+                if (!controller.signal.aborted) {
                     console.warn(error);
+                    if (!initialLogsLoaded && !startupBusy())
+                        syncRecentLogs();
+                }
             }).then(function() {
                 if (streamController === controller)
                     streamController = null;
@@ -485,6 +555,16 @@ return view.extend({
                 if (!controller.signal.aborted)
                     scheduleReconnect();
             });
+        }
+
+        function resumeLogs() {
+            if (logStopped || !pageVisible || startupBusy())
+                return;
+            logsDeferred = false;
+            if (!streamController)
+                startLogStream(true);
+            else if (!initialLogsLoaded)
+                syncRecentLogs();
         }
 
         function waitForLifecycle(action) {
@@ -514,9 +594,12 @@ return view.extend({
 
         function serviceAction(action) {
             actionInProgress = true;
+            activeAction = action;
             actionDeadline = Date.now() + ACTION_TIMEOUT;
             setMessage('notice', _('%s requested...').format(actionText(action)));
             updateActionButtons();
+            if (startupBusy() && !streamController)
+                deferLogs();
 
             return callAction(action).then(function(result) {
                 return nftflowUi.requireOk(result, _('Service action failed.'));
@@ -530,7 +613,9 @@ return view.extend({
                 return false;
             }).then(function(result) {
                 actionInProgress = false;
+                activeAction = null;
                 updateActionButtons();
+                resumeLogs();
                 return result;
             });
         }
@@ -567,7 +652,7 @@ return view.extend({
                 return Promise.resolve();
             }
 
-            startLogStream();
+            resumeLogs();
             return Promise.resolve();
         }));
 
@@ -584,9 +669,6 @@ return view.extend({
             stopLogStream();
             poll.remove(refreshStatus);
         }, { once: true });
-
-        loadInitialLogs();
-        startLogStream();
 
         var root = E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Overview')),
@@ -627,6 +709,15 @@ return view.extend({
                 logOutput
             ])
         ]);
+
+        window.setTimeout(function() {
+            if (!pageVisible)
+                return;
+            if (startupBusy())
+                deferLogs();
+            else
+                startLogStream(true);
+        }, 0);
 
         updateActionButtons();
         return root;
