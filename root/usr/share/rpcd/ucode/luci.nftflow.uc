@@ -80,19 +80,31 @@ function config_read_effective() {
     return { ok: true, config, path: SAVED_CONFIG, bytes: length(config), using_default: true, applied: read_text(APPLIED_CONFIG) != null, applied_path: APPLIED_CONFIG };
 }
 function firewall_read_effective() {
-    let result = run_ctl([ 'firewall-read' ]);
-    if (result && result.ok === true) return result;
-    let config = read_text(DEFAULT_FIREWALL);
-    if (config == null) return result;
-    let runtime = capture_command('nft list table inet nftflow');
-    let active = runtime.ok && trim(runtime.output || '') ? runtime.output : '# No managed NftFlow nftables tables were found.\n';
+    let config = read_text(SAVED_FIREWALL), using_default = false;
+    if (config == null) {
+        config = read_text(DEFAULT_FIREWALL);
+        using_default = true;
+    }
+    if (config == null)
+        return { ok: false, error: `cannot read ${SAVED_FIREWALL} or ${DEFAULT_FIREWALL}`, path: SAVED_FIREWALL };
+
     let applied = read_text(APPLIED_FIREWALL);
     return {
-        ok: true, config, path: SAVED_FIREWALL, bytes: length(config), using_default: true,
-        active, active_found: runtime.ok === true && trim(runtime.output || '') !== '',
-        table_count: runtime.ok === true ? 1 : 0, active_table_count: runtime.ok === true ? 1 : 0, missing_tables: [],
+        ok: true, config, path: SAVED_FIREWALL, bytes: length(config), using_default,
         applied: applied != null, applied_config: applied || '', candidate_config: read_text(CANDIDATE_FIREWALL) || '',
         applied_path: APPLIED_FIREWALL, candidate_path: CANDIDATE_FIREWALL
+    };
+}
+function firewall_runtime_effective() {
+    let result = run_ctl([ 'firewall-read' ]);
+    if (!result || result.ok !== true) return result;
+    return {
+        ok: true,
+        active: result.active || '# No managed NftFlow nftables tables were found.\n',
+        active_found: result.active_found === true,
+        table_count: result.table_count || 0,
+        active_table_count: result.active_table_count || 0,
+        missing_tables: result.missing_tables || []
     };
 }
 function routing_runtime_text(table_id, ipv6) {
@@ -183,6 +195,7 @@ function request_args(request) { return request && request.args ? request.args :
 const methods = {
     status: { args: {}, call: () => status_with_defaults() },
     firewall_read: { args: {}, call: () => firewall_read_effective() },
+    firewall_runtime: { args: {}, call: () => firewall_runtime_effective() },
     firewall_validate: { args: { config: '' }, call: request => run_ctl_file('firewall-validate-file', request_args(request).config || '') },
     firewall_save: { args: { config: '' }, call: request => run_ctl_file('firewall-save-file', request_args(request).config || '') },
     firewall_apply: { args: { config: '' }, call: request => run_ctl_file('firewall-apply-file', request_args(request).config || '') },
