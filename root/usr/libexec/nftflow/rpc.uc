@@ -75,7 +75,7 @@ function config_read_effective() {
 }
 
 function firewall_runtime_effective() {
-    let result = run_ctl([ 'firewall-read' ]);
+    let result = run_ctl([ 'firewall-runtime' ]);
     if (!result || result.ok !== true) return result;
 
     return {
@@ -88,22 +88,6 @@ function firewall_runtime_effective() {
     };
 }
 
-function routing_runtime_text(table_id, ipv6) {
-    let rule4 = capture('ip -4 rule show');
-    let route4 = capture(`ip -4 route show table ${int(table_id)}`);
-    let output = '# ip -4 rule show\n' + (rule4.ok ? trim(rule4.output) : '(unavailable)') +
-        `\n\n# ip -4 route show table ${int(table_id)}\n` + (route4.ok ? trim(route4.output) : '(unavailable)');
-
-    if (ipv6) {
-        let rule6 = capture('ip -6 rule show');
-        let route6 = capture(`ip -6 route show table ${int(table_id)}`);
-        output += '\n\n# ip -6 rule show\n' + (rule6.ok ? trim(rule6.output) : '(unavailable)') +
-            `\n\n# ip -6 route show table ${int(table_id)}\n` + (route6.ok ? trim(route6.output) : '(unavailable)');
-    }
-
-    return output + '\n';
-}
-
 function routing_read_effective() {
     let result = run_ctl([ 'routing-read' ]);
     if (result && result.ok === true) return result;
@@ -114,10 +98,7 @@ function routing_read_effective() {
     let checked = run_ctl([ 'routing-validate', config ]);
     if (!checked || checked.ok !== true) return result;
 
-    let status = run_ctl([ 'status' ]);
-    let table_id = checked.routing_table || 100;
     let applied = read_text(APPLIED_ROUTING);
-
     return {
         ok: true,
         path: SAVED_ROUTING,
@@ -127,17 +108,17 @@ function routing_read_effective() {
         commands: checked.commands || [],
         route_commands: checked.route_commands || [],
         rule_commands: checked.rule_commands || [],
-        active: routing_runtime_text(table_id, checked.ipv6_enabled === true),
-        route_active: status && status.ok === true && status.route_active === true,
-        route_ipv4: status && status.ok === true && status.route_active === true,
-        route_ipv6: status && status.ok === true && status.route_ipv6 === true,
         ipv6_enabled: checked.ipv6_enabled === true,
         firewall_mark: checked.firewall_mark,
-        routing_table: table_id,
+        routing_table: checked.routing_table || 100,
         applied_config: applied || '',
         applied_path: APPLIED_ROUTING,
         candidate_path: CANDIDATE_ROUTING
     };
+}
+
+function routing_runtime_effective() {
+    return run_ctl([ 'routing-runtime' ]);
 }
 
 function status_with_defaults() {
@@ -169,6 +150,8 @@ function dispatch(command) {
         return firewall_runtime_effective();
     case 'routing-read':
         return routing_read_effective();
+    case 'routing-runtime':
+        return routing_runtime_effective();
     default:
         return { ok: false, error: `unsupported RPC helper command: ${command}` };
     }
