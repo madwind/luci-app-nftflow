@@ -11,7 +11,7 @@ PKG_VERSION:=$(VERSION)
 PKG_RELEASE:=$(RELEASE)
 
 LUCI_TITLE:=NftFlow
-LUCI_DESCRIPTION:=NftFlow LuCI manager for Xray service, firewall, routing and GeoData.
+LUCI_DESCRIPTION:=NftFlow LuCI manager for transparent proxy, firewall, routing and GeoData.
 LUCI_DEPENDS:= \
     +@BUSYBOX_CONFIG_IP \
     +@BUSYBOX_CONFIG_FEATURE_IP_ROUTE \
