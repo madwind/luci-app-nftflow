@@ -500,6 +500,13 @@ function active_firewall(tables, fold) {
     if (!length(tables)) return { active, found: false, missing: [], count: 0 };
     return { active, found: !length(missing), missing, count: length(output) };
 }
+function runtime_current() {
+    let runtime_tables = managed_tables(), state = active_firewall(runtime_tables, true);
+    return {
+        ok: true, active: state.active, active_found: state.found, missing_tables: state.missing,
+        table_count: length(runtime_tables), active_table_count: state.count
+    };
+}
 function transaction(current_tables, desired, desired_tables) {
     let lines = [], targets = {};
     function add_deletes(tables) {
@@ -551,12 +558,9 @@ function read_current() {
     let source = read_text(FIREWALL_SOURCE), using_default = false;
     if (source == null) { source = read_text(FIREWALL_DEFAULT); using_default = true; }
     if (source == null) return { ok: false, error: `cannot read ${FIREWALL_SOURCE} or ${FIREWALL_DEFAULT}`, path: FIREWALL_SOURCE };
-    let applied_source = read_text(APPLIED_SOURCE), runtime_tables = managed_tables();
-    let state = active_firewall(runtime_tables, true);
+    let applied_source = read_text(APPLIED_SOURCE);
     return {
         ok: true, config: source, path: FIREWALL_SOURCE, bytes: length(source), using_default,
-        active: state.active, active_found: state.found, missing_tables: state.missing,
-        table_count: length(runtime_tables), active_table_count: state.count,
         applied: applied_source != null, applied_config: applied_source || '', candidate_config: read_text(CANDIDATE) || '',
         applied_path: APPLIED_SOURCE, candidate_path: CANDIDATE
     };
@@ -594,11 +598,8 @@ function apply(raw, write_candidate) {
     let source_saved = compiled_saved.ok ? atomic_write(APPLIED_SOURCE, checked.config, 0o600) : { ok: false, error: null };
     if (!compiled_saved.ok || !source_saved.ok)
         return fail_open(compiled_saved.error || source_saved.error || 'cannot save applied firewall snapshot', 'nftables runtime was removed after the snapshot save failed');
-    let state = active_firewall(runtime_tables, true);
     return {
-        ok: true, applied: true, config: checked.config, applied_config: checked.config,
-        active: state.active, active_found: state.found, missing_tables: state.missing,
-        table_count: length(runtime_tables), active_table_count: state.count, warnings: checked.warnings
+        ok: true, applied: true, config: checked.config, applied_config: checked.config, warnings: checked.warnings
     };
 }
 function remove_firewall() {
@@ -607,7 +608,7 @@ function remove_firewall() {
     if (!removed.ok) return { ok: false, error: 'failed to remove configured nftables tables', detail: removed.detail };
     if (length(managed_tables())) return { ok: false, error: 'some NftFlow nftables tables are still active' };
     fs.unlink(CANDIDATE); fs.unlink(APPLIED_SOURCE); fs.unlink(APPLIED_COMPILED);
-    return { ok: true, enabled: false, active: '# No active NftFlow nftables objects were found.\n' };
+    return { ok: true, enabled: false };
 }
 function read_rpc_input(path) {
     path = `${path ?? ''}`;
@@ -626,6 +627,7 @@ function dispatch(command, args) {
         return apply(source, false);
     }
     if (command == 'firewall-read') return read_current();
+    if (command == 'firewall-runtime') return runtime_current();
     if (command == 'firewall-validate') { let result = validate(args[0]); delete result.compiled; return result; }
     if (command == 'firewall-save') return save(args[0]);
     if (command == 'firewall-apply') return apply(args[0], true);
