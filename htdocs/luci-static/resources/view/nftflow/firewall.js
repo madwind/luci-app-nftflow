@@ -1,6 +1,7 @@
 'use strict';
 'require view';
 'require rpc';
+'require uci';
 'require nftflow.ui as nftflowUi';
 'require nftflow.editor as nftflowEditor';
 'require nftflow.nftformat as nftflowNftFormat';
@@ -24,12 +25,18 @@ function warningDetail(result) {
 
 return view.extend({
     load: function() {
-        return L.resolveDefault(callRead(), { ok: false, error: _('Unable to read the Firewall file.') });
+        return Promise.all([
+            L.resolveDefault(callRead(), { ok: false, error: _('Unable to read the Firewall file.') }),
+            L.resolveDefault(uci.load('nftflow'), null)
+        ]);
     },
 
-    render: function(result) {
+    render: function(data) {
         document.title = _('NftFlow | Firewall');
 
+        var result = data && data[0] || {};
+        var port = String(uci.get('nftflow', 'main', 'listen_port') || '12345');
+        var gid = String(uci.get('nftflow', 'main', 'run_gid') || '23333');
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
         var runtimeState = E('span', { 'aria-live': 'polite' }, _('Loading...'));
         var runtimeRequest = null;
@@ -233,12 +240,9 @@ return view.extend({
 
         var variablesHelp = E('div', { 'class': 'cbi-section-descr' }, [
             E('div', {}, _('Available variables:')),
-            E('div', {}, [ E('code', {}, '%port%'), ' — ', _('TPROXY listen port.') ]),
-            E('div', {}, [ E('code', {}, '%gid%'), ' — ', _('Xray process GID.') ]),
-            E('div', {}, [
-                E('code', {}, '%geoip:<tag>%'), ' — ',
-                _('GeoIP CIDRs for the tag. Use inside the elements of a named IPv4 or IPv6 address set; the set type selects the address family. Missing tags are ignored with a warning; update GeoData to activate them.')
-            ])
+            E('div', {}, [ E('code', {}, '%port%'), ' = ', E('code', {}, port) ]),
+            E('div', {}, [ E('code', {}, '%gid%'), ' = ', E('code', {}, gid) ]),
+            E('div', {}, [ E('code', {}, '%geoip:<tag>%') ])
         ]);
 
         return E('div', { 'class': 'cbi-map' }, [
