@@ -31,7 +31,7 @@ return view.extend({
         document.title = _('NftFlow | Firewall');
 
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
-        var runtimeState = E('span', { 'aria-live': 'polite' }, _('Not loaded'));
+        var runtimeState = E('span', { 'aria-live': 'polite' }, _('Loading...'));
         var runtimeRequest = null;
         var pageVisible = true;
         var editor;
@@ -43,7 +43,7 @@ return view.extend({
             readonly: true
         });
 
-        activeEditor.markSaved(_('# Runtime rules are loaded on demand.\n'));
+        activeEditor.markSaved(_('# Runtime rules are loading.\n'));
 
         function setMessage(state, value) {
             nftflowUi.setState(message, state, value);
@@ -226,6 +226,7 @@ return view.extend({
             'style': 'display:flex; align-items:center; justify-content:space-between; gap:1em'
         }, [ runtimeState, refreshButton ]);
 
+        refreshRuntime(false);
         window.addEventListener('pagehide', function() {
             pageVisible = false;
         }, { once: true });
