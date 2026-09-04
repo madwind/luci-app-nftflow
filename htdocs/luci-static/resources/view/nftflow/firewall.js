@@ -1,18 +1,16 @@
 'use strict';
 'require view';
 'require rpc';
-'require poll';
 'require nftflow.ui as nftflowUi';
 'require nftflow.editor as nftflowEditor';
 'require nftflow.nftformat as nftflowNftFormat';
 
 var callRead = rpc.declare({ object: 'luci.nftflow', method: 'firewall_read', expect: { '': {} }, reject: true });
+var callRuntime = rpc.declare({ object: 'luci.nftflow', method: 'firewall_runtime', expect: { '': {} }, reject: true });
 var callValidate = rpc.declare({ object: 'luci.nftflow', method: 'firewall_validate', params: [ 'config' ], expect: { '': {} }, reject: true });
 var callSave = rpc.declare({ object: 'luci.nftflow', method: 'firewall_save', params: [ 'config' ], expect: { '': {} }, reject: true });
 var callApply = rpc.declare({ object: 'luci.nftflow', method: 'firewall_apply', params: [ 'config' ], expect: { '': {} }, reject: true });
 var callDefault = rpc.declare({ object: 'luci.nftflow.defaults', method: 'firewall', expect: { '': {} }, reject: true });
-
-var RUNTIME_REFRESH_INTERVAL = 10;
 
 function resultDetail(result, fallback) {
     var detail = [ result && result.error, result && result.detail ].filter(Boolean).join(': ');
@@ -33,7 +31,7 @@ return view.extend({
         document.title = _('NftFlow | Firewall');
 
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
-        var runtimeState = E('span', { 'aria-live': 'polite' }, _('Auto refresh every 10 seconds'));
+        var runtimeState = E('span', { 'aria-live': 'polite' }, _('Not loaded'));
         var runtimeRequest = null;
         var pageVisible = true;
         var editor;
@@ -45,6 +43,8 @@ return view.extend({
             readonly: true
         });
 
+        activeEditor.markSaved(_('# Runtime rules are loaded on demand.\n'));
+
         function setMessage(state, value) {
             nftflowUi.setState(message, state, value);
         }
@@ -53,7 +53,7 @@ return view.extend({
             activeEditor.markSaved(next && next.active
                 ? next.active
                 : _('# No active NftFlow nftables tables were found.\n'));
-            nftflowUi.setState(runtimeState, 'ok', _('Live · auto refresh every 10 seconds'));
+            nftflowUi.setState(runtimeState, 'ok', _('Loaded'));
         }
 
         function refreshRuntime(manual) {
@@ -63,7 +63,7 @@ return view.extend({
             if (manual)
                 nftflowUi.setState(runtimeState, 'notice', _('Refreshing...'));
 
-            runtimeRequest = callRead().then(function(next) {
+            runtimeRequest = callRuntime().then(function(next) {
                 return nftflowUi.requireOk(next, _('Unable to read runtime Firewall rules.'));
             }).then(function(next) {
                 updateRuntime(next);
@@ -85,7 +85,6 @@ return view.extend({
                 return nftflowUi.requireOk(next, _('Unable to read the Firewall file.'));
             }).then(function(next) {
                 current.markSaved(next.config || '');
-                updateRuntime(next);
                 setMessage('ok', _('Saved Firewall file reloaded.'));
                 return true;
             }).catch(function(error) {
@@ -210,7 +209,6 @@ return view.extend({
 
         if (result && result.ok === true) {
             editor.markSaved(result.config || '');
-            updateRuntime(result);
         } else {
             setMessage('error', nftflowUi.errorMessage(result, _('Unable to read the Firewall file.')));
         }
@@ -228,10 +226,8 @@ return view.extend({
             'style': 'display:flex; align-items:center; justify-content:space-between; gap:1em'
         }, [ runtimeState, refreshButton ]);
 
-        poll.add(refreshRuntime, RUNTIME_REFRESH_INTERVAL);
         window.addEventListener('pagehide', function() {
             pageVisible = false;
-            poll.remove(refreshRuntime);
         }, { once: true });
 
         var geoipHelp = E('div', { 'class': 'cbi-section-descr' }, [
