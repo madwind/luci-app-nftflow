@@ -198,14 +198,26 @@ function procd_state() {
         if (type(instance) == 'object' && (instance.running === true || instance.running === 1)) return { managed: true, running: true };
     return { managed: true, running: false };
 }
-function status() {
-    let main = main_config();
+function lightweight_status(main) {
+    main = main || main_config();
     let current_pid = process_pid(main.xray_bin);
     let runtime = read_state() || {};
     let state = STATES[runtime.state] ? runtime.state : (current_pid ? 'starting' : 'stopped');
     if (current_pid && (state == 'failed' || state == 'stopped')) state = 'starting';
     if (!current_pid && (state == 'starting' || state == 'ready')) state = 'failed';
     if (!current_pid && state == 'stopping') state = 'stopped';
+    return {
+        running: current_pid != null,
+        runtime_state: state,
+        state_error: runtime.error,
+        pid: current_pid
+    };
+}
+function status() {
+    let main = main_config();
+    let current = lightweight_status(main);
+    let current_pid = current.pid;
+    let runtime = read_state() || {};
     let identity = process_identity(current_pid);
     let routing = routing_status();
     let config = read_text(main.config_file);
@@ -215,12 +227,12 @@ function status() {
     let started = int(runtime.started || 0);
     return {
         ok: true,
-        running: current_pid != null,
-        process: current_pid != null,
+        running: current.running,
+        process: current.running,
         procd_managed: procd.managed,
         procd_running: procd.running,
-        runtime_state: state,
-        state_error: runtime.error,
+        runtime_state: current.runtime_state,
+        state_error: current.state_error,
         app_version: version_match ? version_match[1] : null,
         pid: current_pid,
         uid: identity.uid,
@@ -240,12 +252,17 @@ function status() {
 }
 function action(name) {
     if (name != 'start' && name != 'stop' && name != 'restart' && name != 'reload') return { ok: false, error: 'unsupported service action' };
+    let main = main_config();
+    let before = lightweight_status(main);
+    if ((name == 'restart' || name == 'reload') && !before.running)
+        return { ok: false, action: name, accepted: false, runtime_state: before.runtime_state, error: 'NftFlow is stopped. Use Start to start the service.' };
+
     let force = name == 'start' || name == 'restart';
     let init_action = name == 'reload' ? 'restart' : name;
     let result = capture(`${force ? 'NFTFLOW_FORCE_START=1 ' : ''}/etc/init.d/nftflow ${q(init_action)}`);
-    let current = status();
-    if (!result.ok) return { ok: false, action: name, init_action, accepted: false, detail: trim(result.output || ''), status: current };
-    return { ok: true, action: name, init_action, accepted: true, runtime_state: current.runtime_state, detail: trim(result.output || ''), status: current };
+    let current = lightweight_status(main);
+    if (!result.ok) return { ok: false, action: name, init_action, accepted: false, detail: trim(result.output || ''), runtime_state: current.runtime_state, running: current.running };
+    return { ok: true, action: name, init_action, accepted: true, runtime_state: current.runtime_state, running: current.running, detail: trim(result.output || '') };
 }
 function cleanup() {
     let main = main_config();
