@@ -30,6 +30,8 @@ dns:
       finalQuery: true
 
     - address: "https+local://223.5.5.5/dns-query"
+      expectedIPs:
+        - "geoip:cn"
 
     - address: "https://1.1.1.1/dns-query"
 
