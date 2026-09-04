@@ -11,6 +11,20 @@ var callRead = rpc.declare({
     reject: true
 });
 
+var callRuntime = rpc.declare({
+    object: 'luci.nftflow',
+    method: 'routing_runtime',
+    expect: { '': {} },
+    reject: true
+});
+
+var callReady = rpc.declare({
+    object: 'luci.nftflow',
+    method: 'firewall_ready',
+    expect: { '': {} },
+    reject: true
+});
+
 var callValidate = rpc.declare({
     object: 'luci.nftflow',
     method: 'routing_validate',
@@ -54,6 +68,14 @@ function validationDetail(result) {
     return label.format(detail || _('the command was rejected'));
 }
 
+function resultDetail(result, fallback) {
+    return [ result && result.error, result && result.detail ].filter(Boolean).join(': ') || fallback;
+}
+
+function runtimeTransitionBusy(state) {
+    return state && state.ok === true && (state.state === 'starting' || state.state === 'stopping');
+}
+
 function formatRouting(source) {
     var input = String(source || '').replace(/\r\n?/g, '\n').split('\n');
     var output = [];
@@ -89,6 +111,7 @@ return view.extend({
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
         var runtimeState = E('span', { 'aria-live': 'polite' }, _('Not loaded'));
         var runtimeRequest = null;
+        var runtimeReadyTimer = null;
         var pageVisible = true;
         var editor;
         var activeEditor = nftflowEditor.create({
@@ -99,25 +122,31 @@ return view.extend({
             readonly: true
         });
 
+        activeEditor.markSaved(_('# Runtime rules are not loaded yet.\n'));
+
         function setMessage(state, value) {
             nftflowUi.setState(message, state, value);
+        }
+
+        function invalidateRuntime() {
+            activeEditor.markSaved(_('# Runtime rules are not loaded yet.\n'));
+            nftflowUi.setState(runtimeState, 'notice', _('Not loaded'));
         }
 
         function updateRuntime(next) {
             activeEditor.markSaved(next && next.active
                 ? next.active
                 : _('# No active policy routing commands are installed.\n'));
-            nftflowUi.setState(runtimeState, 'ok', _('Loaded'));
+            nftflowUi.setState(runtimeState, next && next.route_active === true ? 'ok' : 'warn',
+                next && next.route_active === true ? _('Loaded') : _('Inactive'));
         }
 
-        function refreshRuntime(manual) {
+        function refreshRuntime() {
             if (!pageVisible || runtimeRequest)
                 return runtimeRequest || Promise.resolve();
 
-            if (manual)
-                nftflowUi.setState(runtimeState, 'notice', _('Refreshing...'));
-
-            runtimeRequest = callRead().then(function(next) {
+            nftflowUi.setState(runtimeState, 'notice', _('Refreshing...'));
+            runtimeRequest = callRuntime().then(function(next) {
                 return nftflowUi.requireOk(next, _('Unable to read runtime Routing rules.'));
             }).then(function(next) {
                 updateRuntime(next);
@@ -133,6 +162,32 @@ return view.extend({
             return runtimeRequest;
         }
 
+        function refreshRuntimeWhenReady() {
+            if (!pageVisible)
+                return Promise.resolve();
+            if (runtimeReadyTimer !== null) {
+                window.clearTimeout(runtimeReadyTimer);
+                runtimeReadyTimer = null;
+            }
+
+            return callReady().then(function(state) {
+                if (!state || state.ok !== true)
+                    throw new Error(resultDetail(state, _('Runtime refresh failed.')));
+                if (runtimeTransitionBusy(state)) {
+                    nftflowUi.setState(runtimeState, 'notice', _('Waiting for service...'));
+                    runtimeReadyTimer = window.setTimeout(function() {
+                        runtimeReadyTimer = null;
+                        refreshRuntimeWhenReady();
+                    }, 1000);
+                    return false;
+                }
+                return refreshRuntime();
+            }).catch(function(error) {
+                nftflowUi.setState(runtimeState, 'warn', nftflowUi.errorMessage(error, _('Runtime refresh failed.')));
+                return false;
+            });
+        }
+
         function reloadRouting(current) {
             setMessage('notice', _('Reloading the saved Routing file...'));
 
@@ -140,7 +195,6 @@ return view.extend({
                 return nftflowUi.requireOk(next, _('Unable to read the Routing file.'));
             }).then(function(next) {
                 current.markSaved(next.config || '');
-                updateRuntime(next);
                 setMessage('ok', _('Saved Routing file reloaded.'));
                 return true;
             }).catch(function(error) {
@@ -204,8 +258,8 @@ return view.extend({
             setMessage('notice', _('Applying Routing commands to runtime...'));
             return callApply(current.getValue()).then(function(next) {
                 return nftflowUi.requireOk(next, _('Unable to apply Routing commands.'));
-            }).then(function(next) {
-                updateRuntime(next);
+            }).then(function() {
+                invalidateRuntime();
                 setMessage('ok', _('Applied to runtime; the saved file was not changed.'));
                 return true;
             }).catch(function(error) {
@@ -224,9 +278,9 @@ return view.extend({
 
             return callApply(value).then(function(next) {
                 return nftflowUi.requireOk(next, _('Unable to apply Routing commands.'));
-            }).then(function(next) {
+            }).then(function() {
                 applied = true;
-                updateRuntime(next);
+                invalidateRuntime();
                 return callSave(value);
             }).then(function(next) {
                 return nftflowUi.requireOk(next, _('The Routing file could not be saved.'));
@@ -256,19 +310,17 @@ return view.extend({
             applySave: applySaveRouting
         });
 
-        if (result && result.ok === true) {
+        if (result && result.ok === true)
             editor.markSaved(result.config || '');
-            updateRuntime(result);
-        } else {
+        else
             setMessage('error', nftflowUi.errorMessage(result, _('Unable to read the Routing file.')));
-        }
 
         var refreshButton = E('button', {
             'class': 'btn cbi-button cbi-button-action',
             'type': 'button'
         }, _('Refresh'));
         refreshButton.addEventListener('click', function() {
-            refreshRuntime(true);
+            refreshRuntimeWhenReady();
         });
 
         var runtimeToolbar = E('div', {
@@ -278,6 +330,8 @@ return view.extend({
 
         window.addEventListener('pagehide', function() {
             pageVisible = false;
+            if (runtimeReadyTimer !== null)
+                window.clearTimeout(runtimeReadyTimer);
         }, { once: true });
 
         return E('div', { 'class': 'cbi-map' }, [
