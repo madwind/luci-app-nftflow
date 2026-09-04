@@ -14,6 +14,7 @@ LUCI_TITLE:=NftFlow
 LUCI_DESCRIPTION:=NftFlow LuCI manager for network rules, routing, configuration and updates.
 LUCI_EXTRA_DEPENDS:= \
     luci-base (>=0), \
+    rpcd-mod-file (>=0), \
     nftables (>=0), \
     kmod-nft-fib (>=0), \
     kmod-nft-tproxy (>=0), \
@@ -39,6 +40,7 @@ chmod 0755 \
 	"$${postinst_root}/usr/libexec/nftflow/config.uc" \
 	"$${postinst_root}/usr/libexec/nftflow/firewall.uc" \
 	"$${postinst_root}/usr/libexec/nftflow/routing.uc" \
+	"$${postinst_root}/usr/libexec/nftflow/rpc.uc" \
 	"$${postinst_root}/usr/libexec/nftflow/runtime.uc" \
 	"$${postinst_root}/usr/libexec/nftflow/update.uc" \
 	"$${postinst_root}/usr/libexec/nftflow/update-auto.sh" 2>/dev/null || true
