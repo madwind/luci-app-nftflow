@@ -223,24 +223,83 @@ function inspect_source(raw) {
     parsed.macros = macros;
     return parsed;
 }
-function count_elements(body) {
-    let n = 0;
-    for (let value in split(mask(body || ''), ',')) if (trim(value)) n++;
-    return n;
+function runtime_token_visible(raw, position) {
+    let line = position, quote = null, escaped = false;
+    while (line > 0 && substr(raw, line - 1, 1) != '\n') line--;
+    for (let i = line; i < position; i++) {
+        let c = substr(raw, i, 1);
+        if (quote != null) {
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == quote) quote = null;
+            continue;
+        }
+        if (c == '#') return false;
+        if (c == '"' || c == "'") quote = c;
+    }
+    return quote == null;
+}
+function scan_runtime_elements(raw, open_position) {
+    let depth = 1, count = 0, has_item = false;
+    let quote = null, escaped = false, comment = false;
+    for (let pos = open_position + 1; pos < length(raw); pos++) {
+        let c = substr(raw, pos, 1);
+        if (comment) {
+            if (c == '\n') comment = false;
+            continue;
+        }
+        if (quote != null) {
+            if (depth == 1) has_item = true;
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == quote) quote = null;
+            continue;
+        }
+        if (c == '#') { comment = true; continue; }
+        if (c == '"' || c == "'") { quote = c; if (depth == 1) has_item = true; continue; }
+        if (c == '{') { if (depth == 1) has_item = true; depth++; continue; }
+        if (c == '}') {
+            depth--;
+            if (depth == 0) {
+                if (has_item) count++;
+                return { ok: true, close: pos, count };
+            }
+            if (depth < 0) return { ok: false };
+            continue;
+        }
+        if (depth != 1) continue;
+        if (c == ',') {
+            if (has_item) count++;
+            has_item = false;
+            continue;
+        }
+        if (!is_space(c)) has_item = true;
+    }
+    return { ok: false };
 }
 function fold_runtime(runtime) {
-    let parsed = parse_source(runtime);
-    if (!parsed.ok) return runtime;
-    for (let i = length(parsed.sets) - 1; i >= 0; i--) {
-        let spec = parsed.sets[i];
-        if (spec.elements_open == null) continue;
-        let count = count_elements(spec.elements_body || '');
-        if (count <= FOLD_THRESHOLD) continue;
-        let body = spec.elements_body || '';
-        let lead = match(body, /^\s*/); lead = lead ? lead[0] : '';
-        let tail = match(body, /\s*$/); tail = tail ? tail[0] : '';
-        let replacement = (!lead && !tail) ? ` # ${count} entries ` : `${lead}# ${count} entries${tail}`;
-        runtime = substr(runtime, 0, spec.elements_open + 1) + replacement + substr(runtime, spec.elements_close);
+    runtime = `${runtime ?? ''}`;
+    let replacements = [], search_position = 0;
+    while (search_position < length(runtime)) {
+        let rel = index(substr(runtime, search_position), 'elements');
+        if (rel == null || rel < 0) break;
+        let start = search_position + rel, finish = start + 8;
+        search_position = finish;
+        let before = start > 0 ? substr(runtime, start - 1, 1) : '';
+        let after = finish < length(runtime) ? substr(runtime, finish, 1) : '';
+        if ((before && ident_char(before)) || (after && ident_char(after)) || !runtime_token_visible(runtime, start)) continue;
+        let open = skip_space(runtime, finish);
+        if (substr(runtime, open, 1) != '=') continue;
+        open = skip_space(runtime, open + 1);
+        if (substr(runtime, open, 1) != '{') continue;
+        let scanned = scan_runtime_elements(runtime, open);
+        if (!scanned.ok) return runtime;
+        if (scanned.count > FOLD_THRESHOLD) push(replacements, { open, close: scanned.close, count: scanned.count });
+        search_position = scanned.close + 1;
+    }
+    for (let i = length(replacements) - 1; i >= 0; i--) {
+        let replacement = replacements[i];
+        runtime = substr(runtime, 0, replacement.open + 1) + ` # ${replacement.count} entries ` + substr(runtime, replacement.close);
     }
     return runtime;
 }
