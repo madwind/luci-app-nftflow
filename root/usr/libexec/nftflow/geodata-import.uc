@@ -6,8 +6,14 @@
 
 import * as fs from 'fs';
 import { cursor } from 'uci';
+import { connect } from 'ubus';
 
 const RUNTIME = '/var/run/nftflow';
+const SOFTWARE_DIR = '/tmp/nftflow-update';
+const GLOBAL_LOCK = `${SOFTWARE_DIR}/update.lock`;
+const GLOBAL_OWNER = `${GLOBAL_LOCK}/owner.json`;
+const SERVICE_STATE = `${RUNTIME}/state.json`;
+const LOCK_STALE_SECONDS = 30;
 const UPLOADS = {
     geoip: '/tmp/nftflow-geoip-upload.dat',
     geosite: '/tmp/nftflow-geosite-upload.dat'
@@ -28,6 +34,8 @@ function read_text(path) { return fs.readfile(path); }
 function pid() { let p = fs.popen('echo $PPID', 'r'); if (!p) return 0; let n = int(trim(p.read('all') || '0')); p.close(); return n; }
 function temporary(base) { sequence++; return `${base}.${pid()}.${time()}.${sequence}`; }
 function parse_json(raw) { try { return json(raw); } catch (e) { return null; } }
+function bool(value) { return value === true || value === 1 || value == '1' || value == 'true' || value == 'yes' || value == 'on'; }
+function process_alive(process_pid) { process_pid = int(process_pid || 0); return process_pid > 1 && quiet(`kill -0 ${process_pid}`); }
 function atomic_write(path, value, mode) {
     let parent = fs.dirname(path) || '.';
     if (!mkdirp(parent)) return { ok: false, error: `cannot create ${parent}` };
@@ -49,6 +57,52 @@ function geo_config(kind) {
     if (kind == 'geoip') return { path: uci_get('geoip_file', `${dir}/geoip.dat`), upload: UPLOADS.geoip };
     if (kind == 'geosite') return { path: uci_get('geosite_file', `${dir}/geosite.dat`), upload: UPLOADS.geosite };
     return null;
+}
+function update_state_path(kind) {
+    if (kind == 'nftflow' || kind == 'xray') return `${SOFTWARE_DIR}/${kind}.json`;
+    return `${RUNTIME}/geo-update-${kind}.json`;
+}
+function update_claimed(kind) {
+    if (kind != 'nftflow' && kind != 'xray' && kind != 'geoip' && kind != 'geosite') return false;
+    let state = parse_json(read_text(update_state_path(kind)) || '');
+    if (type(state) != 'object') return false;
+    if (state.status != 'starting' && state.status != 'running' && state.status != 'stopping') return false;
+    if (process_alive(state.pid)) return true;
+    let started = int(state.started || 0);
+    return state.status == 'starting' && started > 0 && time() - started < LOCK_STALE_SECONDS;
+}
+function global_lock_info() {
+    let value = parse_json(read_text(GLOBAL_OWNER) || '');
+    return type(value) == 'object' ? value : {};
+}
+function global_lock_active() {
+    let stat = fs.stat(GLOBAL_LOCK);
+    if (type(stat) != 'object') return false;
+    let info = global_lock_info(), owner = `${info.owner || ''}`, owner_pid = int(info.pid || 0), started = int(info.started || 0);
+    if (update_claimed(owner) || process_alive(owner_pid)) return true;
+    if (started > 0 && time() - started < LOCK_STALE_SECONDS) return true;
+    return time() - int(stat.mtime || 0) < LOCK_STALE_SECONDS;
+}
+function clear_global_lock() {
+    fs.unlink(GLOBAL_OWNER);
+    quiet(`rmdir ${q(GLOBAL_LOCK)}`);
+}
+function acquire_global_lock(owner) {
+    if (!mkdirp(SOFTWARE_DIR)) return false;
+    if (!quiet(`mkdir ${q(GLOBAL_LOCK)}`)) {
+        if (global_lock_active()) return false;
+        clear_global_lock();
+        if (!quiet(`mkdir ${q(GLOBAL_LOCK)}`)) return false;
+    }
+    let written = fs.writefile(GLOBAL_OWNER, sprintf('%J\n', { owner, pid: pid(), started: time() }));
+    if (written == null) { clear_global_lock(); return false; }
+    fs.chmod(GLOBAL_OWNER, 0o600);
+    return true;
+}
+function release_global_lock(owner) {
+    let current = `${global_lock_info().owner || ''}`;
+    if (current && current != owner) return;
+    clear_global_lock();
 }
 function read_varint_file(file) {
     let value = 0, multiplier = 1;
@@ -134,7 +188,30 @@ function validate_geodata(kind, path) {
     if (detected != kind) return { ok: false, error: `uploaded file is ${detected == 'geoip' ? 'GeoIP' : 'GeoSite'} data, not ${kind == 'geoip' ? 'GeoIP' : 'GeoSite'}` };
     return { ok: true, entries, size: int(stat.size || 0) };
 }
-function nftflow_running() { return quiet('/etc/init.d/nftflow running'); }
+function nftflow_running() {
+    try {
+        let ubus = connect();
+        if (!ubus) return false;
+        let result = ubus.call('service', 'list', { name: 'nftflow' }), service = result && result.nftflow;
+        if (type(service) != 'object' || type(service.instances) != 'object') return false;
+        for (let name, instance in service.instances)
+            if (type(instance) == 'object' && bool(instance.running)) return true;
+    } catch (e) {}
+    return false;
+}
+function nftflow_state() {
+    let state = parse_json(read_text(SERVICE_STATE) || '');
+    return type(state) == 'object' ? `${state.state || ''}` : '';
+}
+function wait_nftflow_ready() {
+    let stable = 0;
+    for (let i = 0; i < 45; i++) {
+        if (nftflow_running() && nftflow_state() == 'ready') { stable++; if (stable >= 2) return true; }
+        else stable = 0;
+        system('sleep 1');
+    }
+    return false;
+}
 function restore_version(path, previous) {
     if (previous == null) { fs.unlink(path); return true; }
     return atomic_write(path, previous, 0o644).ok === true;
@@ -161,6 +238,7 @@ function save_local_state(kind, size) {
     state.error = null;
     state.message = `Local ${kind == 'geoip' ? 'GeoIP' : 'GeoSite'} file uploaded`;
     state.upload_size = size;
+    state.batch = false;
     return atomic_write(state_path, sprintf('%J\n', state), 0o600);
 }
 function install(kind) {
@@ -172,6 +250,13 @@ function install(kind) {
     if (!mkdirp(fs.dirname(cfg.path) || '.')) { fs.unlink(cfg.upload); return { ok: false, error: `cannot create ${fs.dirname(cfg.path) || '.'}` }; }
 
     let stage = temporary(`${cfg.path}.nftflow-upload`);
+    if (!quiet(`cp ${q(cfg.upload)} ${q(stage)}`)) { fs.unlink(cfg.upload); fs.unlink(stage); return { ok: false, error: 'cannot copy uploaded GeoData into asset directory' }; }
+    fs.unlink(cfg.upload);
+    fs.chmod(stage, 0o644);
+
+    let owner = `upload-${kind}`;
+    if (!acquire_global_lock(owner)) { fs.unlink(stage); return { ok: false, error: 'another update is already active or starting' }; }
+
     let backup = temporary(`${cfg.path}.nftflow-backup`);
     let version_path = `${cfg.path}.version`;
     let old_version = read_text(version_path);
@@ -179,14 +264,22 @@ function install(kind) {
     let had_previous = type(previous) == 'object';
     let was_running = nftflow_running();
 
-    if (!quiet(`cp ${q(cfg.upload)} ${q(stage)}`)) { fs.unlink(cfg.upload); fs.unlink(stage); return { ok: false, error: 'cannot copy uploaded GeoData into asset directory' }; }
-    fs.unlink(cfg.upload);
-    fs.chmod(stage, 0o644);
+    if (was_running && !quiet('/etc/init.d/nftflow stop')) {
+        fs.unlink(stage); release_global_lock(owner);
+        return { ok: false, error: 'Unable to stop NftFlow before installing uploaded GeoData' };
+    }
 
-    if (had_previous && fs.rename(cfg.path, backup) !== true) { fs.unlink(stage); return { ok: false, error: 'cannot preserve previous GeoData file' }; }
+    if (had_previous && fs.rename(cfg.path, backup) !== true) {
+        fs.unlink(stage);
+        if (was_running) { quiet('/etc/init.d/nftflow start'); wait_nftflow_ready(); }
+        release_global_lock(owner);
+        return { ok: false, error: 'cannot preserve previous GeoData file' };
+    }
     if (fs.rename(stage, cfg.path) !== true) {
         if (had_previous) fs.rename(backup, cfg.path);
         fs.unlink(stage);
+        if (was_running) { quiet('/etc/init.d/nftflow start'); wait_nftflow_ready(); }
+        release_global_lock(owner);
         return { ok: false, error: `cannot replace ${cfg.path}` };
     }
     fs.chmod(cfg.path, 0o644);
@@ -196,19 +289,27 @@ function install(kind) {
         fs.unlink(cfg.path);
         if (had_previous) fs.rename(backup, cfg.path);
         restore_version(version_path, old_version);
+        if (was_running) { quiet('/etc/init.d/nftflow start'); wait_nftflow_ready(); }
+        release_global_lock(owner);
         return { ok: false, error: version_saved.error };
     }
 
-    if (was_running && !quiet('/etc/init.d/nftflow restart')) {
+    if (was_running && (!quiet('/etc/init.d/nftflow start') || !wait_nftflow_ready())) {
+        quiet('/etc/init.d/nftflow stop');
         fs.unlink(cfg.path);
         if (had_previous) fs.rename(backup, cfg.path);
         restore_version(version_path, old_version);
-        quiet('/etc/init.d/nftflow start');
-        return { ok: false, error: 'NftFlow failed to restart with uploaded GeoData; previous file was restored' };
+        let recovered = quiet('/etc/init.d/nftflow start') && wait_nftflow_ready();
+        if (!recovered) quiet('/etc/init.d/nftflow stop');
+        release_global_lock(owner);
+        return { ok: false, error: recovered
+            ? 'NftFlow rejected uploaded GeoData; previous file was restored'
+            : 'NftFlow rejected uploaded GeoData; previous file was restored but service recovery also failed' };
     }
 
     fs.unlink(backup);
     let state = save_local_state(kind, checked.size);
+    release_global_lock(owner);
     if (!state.ok) return { ok: false, error: state.error || 'GeoData was installed but update state could not be saved' };
     return { ok: true, kind, path: cfg.path, size: checked.size, entries: checked.entries, version: 'Local', restarted: was_running };
 }
