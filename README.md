@@ -1,6 +1,6 @@
 # luci-app-nftflow
 
-`luci-app-nftflow` is a LuCI network traffic management plugin for OpenWrt. It manages transparent proxy rules, policy routing, GeoIP/GeoSite data and component updates.
+`luci-app-nftflow` is a LuCI network traffic management plugin for OpenWrt. It provides configuration editing, firewall rule management, policy routing and component updates.
 
 The backend is implemented with OpenWrt native **ucode**. No Lua runtime or LuCI Lua compatibility libraries are required.
 
