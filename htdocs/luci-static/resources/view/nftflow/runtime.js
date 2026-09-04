@@ -71,7 +71,12 @@ return view.extend({
         var process = map.section(form.NamedSection, 'main', 'nftflow', _('Process'));
         process.anonymous = true;
 
-        option = process.option(form.Value, 'run_gid', _('Process GID'), _('Numeric primary group identity used by the Xray process.'));
+        option = process.option(form.Value, 'listen_port', _('TPROXY port'), _('Runtime value used for the %port% placeholder in the Xray YAML and Firewall templates.'));
+        option.datatype = 'port';
+        option.rmempty = false;
+        option.default = '12345';
+
+        option = process.option(form.Value, 'run_gid', _('Process GID'), _('Numeric primary group identity used by the Xray process and the %gid% Firewall placeholder.'));
         option.datatype = 'uinteger';
         option.rmempty = false;
         option.default = '23333';
