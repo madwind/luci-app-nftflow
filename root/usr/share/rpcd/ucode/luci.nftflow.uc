@@ -1,6 +1,6 @@
 #!/usr/bin/env ucode
 // SPDX-License-Identifier: Apache-2.0
-// ACL-protected bridge between LuCI and the current NftFlow subsystem controllers.
+// ACL-protected bridge between LuCI and NftFlow native ucode controllers.
 
 'use strict';
 
@@ -8,10 +8,7 @@ import { access, chmod, mkdtemp, mkdir, open, popen, rmdir, unlink } from 'fs';
 
 const RUNTIME = '/var/run/nftflow';
 const CTL = '/usr/libexec/nftflow/nftflowctl';
-const GEO_UPDATE = '/usr/libexec/nftflow/geo-update.lua';
-const SOFTWARE_UPDATE = '/usr/libexec/nftflow/update.lua';
-const UPDATE_AUTO = '/usr/libexec/nftflow/update-auto.sh';
-const STOP_UPDATE = '/usr/libexec/nftflow/stop-update.lua';
+const UPDATE = '/usr/libexec/nftflow/update.uc';
 const RPC_DIRECTORY_MODE = 448;
 const RPC_FILE_MODE = 384;
 const RPC_PAYLOAD_MAX_BYTES = 32 * 1024;
@@ -35,7 +32,6 @@ function parse_result(output) {
     }
     return { ok: false, error: trim(output || 'controller returned no JSON') };
 }
-
 function shellquote(value) { return "'" + replace(`${value == null ? '' : value}`, /'/g, "'\\''") + "'"; }
 function run_command(command) {
     let fd = popen(`${command} 2>&1`, 'r');
@@ -43,7 +39,10 @@ function run_command(command) {
     let output = fd.read('all') || '';
     let success = fd.close();
     let result = parse_result(output);
-    if (success !== true && success !== 0 && result.ok === true) { result.ok = false; result.error = `command exited with an error: ${trim(output)}`; }
+    if (success !== 0 && result.ok === true) {
+        result.ok = false;
+        result.error = `command exited with an error: ${trim(output)}`;
+    }
     return result;
 }
 function capture_command(command) {
@@ -51,18 +50,25 @@ function capture_command(command) {
     if (!fd) return { ok: false, output: '', error: 'unable to execute command' };
     let output = fd.read('all') || '';
     let success = fd.close();
-    let ok = success === true || success === 0;
-    return { ok: ok, output: output, error: ok ? null : (trim(output) || 'command failed') };
+    let ok = success === 0;
+    return { ok, output, error: ok ? null : (trim(output) || 'command failed') };
 }
-function read_text(path) { let file = open(path, 'r'); if (!file) return null; let value = file.read('all') || ''; file.close(); return value; }
-function run_ctl(args) { let command = `/bin/sh ${CTL}`; for (let arg in args) command += ` ${shellquote(arg)}`; return run_command(command); }
-function run_geo_update(command, kind) { let line = `/usr/bin/lua ${GEO_UPDATE} ${shellquote(command)}`; if (kind) line += ` ${shellquote(kind)}`; return run_command(line); }
-function run_software_update(command, kind) { let line = `/usr/bin/lua ${SOFTWARE_UPDATE} ${shellquote(command)}`; if (kind) line += ` ${shellquote(kind)}`; return run_command(line); }
-function run_stop_update(kind) { return run_command(`/usr/bin/lua ${STOP_UPDATE} ${shellquote(kind)}`); }
-function run_update_auto(command, kind, enabled) {
-    let line = `/bin/sh ${UPDATE_AUTO} ${shellquote(command)}`;
+function read_text(path) {
+    let file = open(path, 'r');
+    if (!file) return null;
+    let value = file.read('all') || '';
+    file.close();
+    return value;
+}
+function run_ctl(args) {
+    let command = `/bin/sh ${CTL}`;
+    for (let arg in args) command += ` ${shellquote(arg)}`;
+    return run_command(command);
+}
+function run_update(command, kind, value) {
+    let line = `/usr/bin/ucode ${UPDATE} ${shellquote(command)}`;
     if (kind != null) line += ` ${shellquote(kind)}`;
-    if (enabled != null) line += ` ${shellquote(enabled ? 1 : 0)}`;
+    if (value != null) line += ` ${shellquote(value)}`;
     return run_command(line);
 }
 
@@ -71,9 +77,8 @@ function config_read_effective() {
     if (result && result.ok === true) return result;
     let config = read_text(DEFAULT_CONFIG);
     if (config == null) return result;
-    return { ok: true, config: config, path: SAVED_CONFIG, bytes: length(config), using_default: true, applied: read_text(APPLIED_CONFIG) != null, applied_path: APPLIED_CONFIG };
+    return { ok: true, config, path: SAVED_CONFIG, bytes: length(config), using_default: true, applied: read_text(APPLIED_CONFIG) != null, applied_path: APPLIED_CONFIG };
 }
-
 function firewall_read_effective() {
     let result = run_ctl([ 'firewall-read' ]);
     if (result && result.ok === true) return result;
@@ -83,26 +88,26 @@ function firewall_read_effective() {
     let active = runtime.ok && trim(runtime.output || '') ? runtime.output : '# No managed NftFlow nftables tables were found.\n';
     let applied = read_text(APPLIED_FIREWALL);
     return {
-        ok: true, config: config, path: SAVED_FIREWALL, bytes: length(config), using_default: true,
-        active: active, active_found: runtime.ok === true && trim(runtime.output || '') !== '',
+        ok: true, config, path: SAVED_FIREWALL, bytes: length(config), using_default: true,
+        active, active_found: runtime.ok === true && trim(runtime.output || '') !== '',
         table_count: runtime.ok === true ? 1 : 0, active_table_count: runtime.ok === true ? 1 : 0, missing_tables: [],
         applied: applied != null, applied_config: applied || '', candidate_config: read_text(CANDIDATE_FIREWALL) || '',
         applied_path: APPLIED_FIREWALL, candidate_path: CANDIDATE_FIREWALL
     };
 }
-
 function routing_runtime_text(table_id, ipv6) {
     let rule4 = capture_command('ip -4 rule show');
     let route4 = capture_command(`ip -4 route show table ${table_id}`);
-    let output = '# ip -4 rule show\n' + (rule4.ok ? trim(rule4.output) : '(unavailable)') + `\n\n# ip -4 route show table ${table_id}\n` + (route4.ok ? trim(route4.output) : '(unavailable)');
+    let output = '# ip -4 rule show\n' + (rule4.ok ? trim(rule4.output) : '(unavailable)') +
+        `\n\n# ip -4 route show table ${table_id}\n` + (route4.ok ? trim(route4.output) : '(unavailable)');
     if (ipv6) {
         let rule6 = capture_command('ip -6 rule show');
         let route6 = capture_command(`ip -6 route show table ${table_id}`);
-        output += '\n\n# ip -6 rule show\n' + (rule6.ok ? trim(rule6.output) : '(unavailable)') + `\n\n# ip -6 route show table ${table_id}\n` + (route6.ok ? trim(route6.output) : '(unavailable)');
+        output += '\n\n# ip -6 rule show\n' + (rule6.ok ? trim(rule6.output) : '(unavailable)') +
+            `\n\n# ip -6 route show table ${table_id}\n` + (route6.ok ? trim(route6.output) : '(unavailable)');
     }
     return output + '\n';
 }
-
 function routing_read_effective() {
     let result = run_ctl([ 'routing-read' ]);
     if (result && result.ok === true) return result;
@@ -124,7 +129,6 @@ function routing_read_effective() {
         applied_config: applied || '', applied_path: APPLIED_ROUTING, candidate_path: CANDIDATE_ROUTING
     };
 }
-
 function status_with_defaults() {
     let result = run_ctl([ 'status' ]);
     if (!result || result.ok !== true) return result;
@@ -132,67 +136,107 @@ function status_with_defaults() {
         let routing = read_text(DEFAULT_ROUTING);
         if (routing != null) {
             let checked = run_ctl([ 'routing-validate', routing ]);
-            if (checked && checked.ok === true) { result.routing_configured = true; result.policy_route_commands = checked.commands || []; result.routing_default = true; }
+            if (checked && checked.ok === true) {
+                result.routing_configured = true;
+                result.policy_route_commands = checked.commands || [];
+                result.routing_default = true;
+            }
         }
     }
     return result;
 }
-
 function create_payload(value) {
     let content = `${value == null ? '' : value}`;
     if (access(RUNTIME, 'f') !== true && mkdir(RUNTIME, RPC_DIRECTORY_MODE) !== true && access(RUNTIME, 'f') !== true) return null;
-    let directory = mkdtemp(`${RUNTIME}/rpc-XXXXXX`); if (!directory) return null;
-    let path = `${directory}/payload`; let file = open(path, 'wx', RPC_FILE_MODE);
+    let directory = mkdtemp(`${RUNTIME}/rpc-XXXXXX`);
+    if (!directory) return null;
+    let path = `${directory}/payload`;
+    let file = open(path, 'wx', RPC_FILE_MODE);
     if (!file) { rmdir(directory); return null; }
-    let written = file.write(content); let closed = file.close();
-    if (written == null || written !== length(content) || closed !== true || chmod(path, RPC_FILE_MODE) !== true) { unlink(path); rmdir(directory); return null; }
-    return { directory: directory, path: path };
+    let written = file.write(content);
+    let closed = file.close();
+    if (written == null || written !== length(content) || closed !== true || chmod(path, RPC_FILE_MODE) !== true) {
+        unlink(path); rmdir(directory); return null;
+    }
+    return { directory, path };
 }
-function remove_payload(payload) { if (!payload) return; if (payload.path) unlink(payload.path); if (payload.directory) rmdir(payload.directory); }
+function remove_payload(payload) {
+    if (!payload) return;
+    if (payload.path) unlink(payload.path);
+    if (payload.directory) rmdir(payload.directory);
+}
 function run_ctl_file(command, value) {
     value = `${value == null ? '' : value}`;
     if (length(value) > RPC_PAYLOAD_MAX_BYTES) return { ok: false, error: 'editor content is larger than 32 KiB' };
-    let payload = create_payload(value); if (!payload) return { ok: false, error: 'unable to create secure RPC temporary file' };
-    let result; try { result = run_ctl([ command, payload.path ]); } catch (e) { result = { ok: false, error: `${e}` }; }
-    remove_payload(payload); return result;
+    let payload = create_payload(value);
+    if (!payload) return { ok: false, error: 'unable to create secure RPC temporary file' };
+    let result;
+    try { result = run_ctl([ command, payload.path ]); }
+    catch (e) { result = { ok: false, error: `${e}` }; }
+    remove_payload(payload);
+    return result;
 }
-
 function valid_action(name) { return name == 'start' || name == 'stop' || name == 'reload' || name == 'restart'; }
-function valid_geo_kind(kind) { return kind == 'geoip' || kind == 'geosite'; }
-function valid_software_kind(kind) { return kind == 'nftflow' || kind == 'xray'; }
-function valid_update_kind(kind) { return valid_software_kind(kind) || valid_geo_kind(kind); }
-function update_check(kind) {
-    if (!valid_update_kind(kind)) return { ok: false, error: 'invalid update kind' };
-    return valid_software_kind(kind) ? run_software_update('check', kind) : run_geo_update('check', kind);
-}
-function update_install(kind) {
-    if (!valid_update_kind(kind)) return { ok: false, error: 'invalid update kind' };
-    return valid_software_kind(kind) ? run_software_update('start', kind) : run_geo_update('start', kind);
-}
+function valid_update_kind(kind) { return kind == 'nftflow' || kind == 'xray' || kind == 'geoip' || kind == 'geosite'; }
+function request_args(request) { return request && request.args ? request.args : {}; }
 
 const methods = {
     status: { args: {}, call: () => status_with_defaults() },
     firewall_read: { args: {}, call: () => firewall_read_effective() },
-    firewall_validate: { args: { config: '' }, call: request => run_ctl_file('firewall-validate-file', request && request.args ? request.args.config || '' : '') },
-    firewall_save: { args: { config: '' }, call: request => run_ctl_file('firewall-save-file', request && request.args ? request.args.config || '' : '') },
-    firewall_apply: { args: { config: '' }, call: request => run_ctl_file('firewall-apply-file', request && request.args ? request.args.config || '' : '') },
+    firewall_validate: { args: { config: '' }, call: request => run_ctl_file('firewall-validate-file', request_args(request).config || '') },
+    firewall_save: { args: { config: '' }, call: request => run_ctl_file('firewall-save-file', request_args(request).config || '') },
+    firewall_apply: { args: { config: '' }, call: request => run_ctl_file('firewall-apply-file', request_args(request).config || '') },
     routing_read: { args: {}, call: () => routing_read_effective() },
-    routing_validate: { args: { config: '' }, call: request => run_ctl_file('routing-validate-file', request && request.args ? request.args.config || '' : '') },
-    routing_save: { args: { config: '' }, call: request => run_ctl_file('routing-save-file', request && request.args ? request.args.config || '' : '') },
-    routing_apply: { args: { config: '' }, call: request => run_ctl_file('routing-apply-file', request && request.args ? request.args.config || '' : '') },
+    routing_validate: { args: { config: '' }, call: request => run_ctl_file('routing-validate-file', request_args(request).config || '') },
+    routing_save: { args: { config: '' }, call: request => run_ctl_file('routing-save-file', request_args(request).config || '') },
+    routing_apply: { args: { config: '' }, call: request => run_ctl_file('routing-apply-file', request_args(request).config || '') },
     config_read: { args: {}, call: () => config_read_effective() },
-    config_validate: { args: { config: '' }, call: request => run_ctl_file('config-validate-file', request && request.args ? request.args.config || '' : '') },
-    config_apply: { args: { config: '' }, call: request => run_ctl_file('config-apply-file', request && request.args ? request.args.config || '' : '') },
-    config_save: { args: { config: '' }, call: request => run_ctl_file('config-save-file', request && request.args ? request.args.config || '' : '') },
-    geo_status: { args: {}, call: () => run_ctl([ 'geo', 'status' ]) },
-    update_status: { args: {}, call: () => run_software_update('status') },
-    update_check: { args: { kind: 'nftflow' }, call: request => update_check(request && request.args ? request.args.kind || '' : '') },
-    update_install: { args: { kind: 'nftflow' }, call: request => update_install(request && request.args ? request.args.kind || '' : '') },
-    update_stop: { args: { kind: 'nftflow' }, call: request => { let kind = request && request.args ? request.args.kind || '' : ''; if (!valid_update_kind(kind)) return { ok: false, error: 'invalid update kind' }; return run_stop_update(kind); } },
-    update_settings: { args: {}, call: () => run_update_auto('status') },
-    update_set_check: { args: { enabled: 0 }, call: request => run_update_auto('set-check', request && request.args ? request.args.enabled : 0) },
-    update_set_auto: { args: { kind: 'nftflow', enabled: 0 }, call: request => { let args = request && request.args ? request.args : {}; if (!valid_update_kind(args.kind || '')) return { ok: false, error: 'invalid update kind' }; return run_update_auto('set-auto', args.kind, args.enabled); } },
-    action: { args: { name: '' }, call: request => { let name = request && request.args ? request.args.name || '' : ''; if (!valid_action(name)) return { ok: false, error: 'unsupported service action' }; return run_ctl([ 'action', name ]); } },
+    config_validate: { args: { config: '' }, call: request => run_ctl_file('config-validate-file', request_args(request).config || '') },
+    config_apply: { args: { config: '' }, call: request => run_ctl_file('config-apply-file', request_args(request).config || '') },
+    config_save: { args: { config: '' }, call: request => run_ctl_file('config-save-file', request_args(request).config || '') },
+    geo_status: { args: {}, call: () => run_update('geo-status') },
+    update_status: { args: {}, call: () => run_update('status') },
+    update_check: {
+        args: { kind: 'nftflow' },
+        call: request => {
+            let kind = request_args(request).kind || '';
+            return valid_update_kind(kind) ? run_update('check', kind) : { ok: false, error: 'invalid update kind' };
+        }
+    },
+    update_install: {
+        args: { kind: 'nftflow' },
+        call: request => {
+            let kind = request_args(request).kind || '';
+            return valid_update_kind(kind) ? run_update('start', kind) : { ok: false, error: 'invalid update kind' };
+        }
+    },
+    update_stop: {
+        args: { kind: 'nftflow' },
+        call: request => {
+            let kind = request_args(request).kind || '';
+            return valid_update_kind(kind) ? run_update('stop', kind) : { ok: false, error: 'invalid update kind' };
+        }
+    },
+    update_settings: { args: {}, call: () => run_update('auto-status') },
+    update_set_check: {
+        args: { enabled: 0 },
+        call: request => run_update('auto-set-check', null, request_args(request).enabled ? 1 : 0)
+    },
+    update_set_auto: {
+        args: { kind: 'nftflow', enabled: 0 },
+        call: request => {
+            let args = request_args(request);
+            let kind = args.kind || '';
+            return valid_update_kind(kind) ? run_update('auto-set', kind, args.enabled ? 1 : 0) : { ok: false, error: 'invalid update kind' };
+        }
+    },
+    action: {
+        args: { name: '' },
+        call: request => {
+            let name = request_args(request).name || '';
+            return valid_action(name) ? run_ctl([ 'action', name ]) : { ok: false, error: 'unsupported service action' };
+        }
+    },
     service_sync: { args: {}, call: () => run_ctl([ 'service-sync' ]) }
 };
 
