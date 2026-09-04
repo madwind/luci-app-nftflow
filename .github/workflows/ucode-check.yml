@@ -1,0 +1,66 @@
+name: Ucode Check
+
+on:
+  push:
+    branches:
+      - ucode-migration
+    paths:
+      - 'root/usr/libexec/nftflow/**'
+      - 'root/usr/share/rpcd/ucode/**'
+      - 'install.sh'
+      - '.github/workflows/ucode-check.yml'
+  pull_request:
+    paths:
+      - 'root/usr/libexec/nftflow/**'
+      - 'root/usr/share/rpcd/ucode/**'
+      - 'install.sh'
+      - '.github/workflows/ucode-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build ucode compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes build-essential cmake libjson-c-dev pkg-config
+          git clone --depth 1 https://github.com/jow-/ucode.git "$RUNNER_TEMP/ucode"
+          cmake -S "$RUNNER_TEMP/ucode" -B "$RUNNER_TEMP/ucode-build" \
+            -DBUILD_MODULE_UBUS=OFF \
+            -DBUILD_MODULE_UCI=OFF \
+            -DBUILD_MODULE_ULOOP=OFF \
+            -DBUILD_MODULE_SOCKET=OFF \
+            -DBUILD_MODULE_NL80211=OFF
+          cmake --build "$RUNNER_TEMP/ucode-build" --parallel 2
+          echo "$RUNNER_TEMP/ucode-build" >> "$GITHUB_PATH"
+
+      - name: Compile ucode sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ucode-bytecode"
+          i=0
+          while IFS= read -r file; do
+            i=$((i + 1))
+            echo "Checking $file"
+            ucode -c -o "$RUNNER_TEMP/ucode-bytecode/$i.uc" "$file"
+          done < <(find root/usr/libexec/nftflow root/usr/share/rpcd/ucode -type f -name '*.uc' -print | sort)
+          test "$i" -gt 0
+
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh -n install.sh
+          sh -n root/usr/libexec/nftflow/nftflowctl
+          sh -n root/usr/libexec/nftflow/update-auto.sh
+          sh -n root/etc/init.d/nftflow
