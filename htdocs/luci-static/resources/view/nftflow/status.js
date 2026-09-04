@@ -12,6 +12,13 @@ var callStatus = rpc.declare({
     reject: true
 });
 
+var callReady = rpc.declare({
+    object: 'luci.nftflow',
+    method: 'firewall_ready',
+    expect: { '': {} },
+    reject: true
+});
+
 var callAction = rpc.declare({
     object: 'luci.nftflow',
     method: 'action',
@@ -87,9 +94,18 @@ return view.extend({
     handleReset: null,
 
     load: function() {
-        return Promise.all([
-            L.resolveDefault(callStatus(), { ok: false, error: _('Unable to read service status.') })
-        ]);
+        return L.resolveDefault(callReady(), {}).then(function(state) {
+            if (state && state.ok === true && state.busy === true) {
+                return [ {
+                    ok: true,
+                    running: state.running === true,
+                    runtime_state: state.state || (state.running === true ? 'starting' : 'stopped')
+                } ];
+            }
+            return Promise.all([
+                L.resolveDefault(callStatus(), { ok: false, error: _('Unable to read service status.') })
+            ]);
+        });
     },
 
     render: function(data) {
@@ -216,6 +232,23 @@ return view.extend({
         function refreshStatus() {
             if (!pageVisible || statusRequest)
                 return statusRequest || Promise.resolve();
+            if (actionInProgress && startupBusy())
+                return Promise.resolve(lastStatus);
+
+            if (startupBusy()) {
+                statusRequest = callReady().then(function(state) {
+                    if (state && state.ok === true && state.busy === true)
+                        return lastStatus;
+                    return callStatus().then(updateStatus);
+                }).catch(function(error) {
+                    showStatusUnavailable(error);
+                    return null;
+                }).then(function(result) {
+                    statusRequest = null;
+                    return result;
+                });
+                return statusRequest;
+            }
 
             statusRequest = callStatus().then(function(result) {
                 return updateStatus(result);
@@ -568,18 +601,21 @@ return view.extend({
         }
 
         function waitForLifecycle(action) {
-            return callStatus().then(function(result) {
-                updateStatus(result);
+            return callReady().then(function(state) {
+                state = state || {};
+                if (state.ok === false)
+                    throw new Error(state.error || _('Unable to read NftFlow startup state.'));
+                if (state.state === 'failed')
+                    throw new Error(_('NftFlow failed to reach the requested state.'));
 
-                if (result.runtime_state === 'failed')
-                    throw new Error(result.state_error || _('NftFlow failed to reach the requested state.'));
-
+                var running = state.running === true;
+                var ready = state.ready === true;
                 var complete = action === 'stop'
-                    ? result.running !== true && result.runtime_state === 'stopped'
-                    : result.running === true && result.runtime_state === 'ready';
+                    ? !running && state.state === 'stopped'
+                    : ready;
 
                 if (complete)
-                    return result;
+                    return callStatus().then(updateStatus);
                 if (Date.now() >= actionDeadline)
                     throw new Error(_('NftFlow did not reach the requested state within 45 seconds.'));
 
