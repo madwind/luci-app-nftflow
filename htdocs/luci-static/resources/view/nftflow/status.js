@@ -163,7 +163,7 @@ return view.extend({
         function startupBusy() {
             if (actionInProgress && (activeAction === 'start' || activeAction === 'restart'))
                 return true;
-            return !!(lastStatus && lastStatus.runtime_state === 'starting');
+            return !!(lastStatus && (lastStatus.runtime_state === 'starting' || lastStatus.runtime_state === 'stopping'));
         }
 
         function updateActionButtons() {
@@ -264,7 +264,7 @@ return view.extend({
         }
 
         function logFilterExpression() {
-            var pattern = logFilter.value.trim();
+            var pattern = logFilter.value;
             if (!pattern) {
                 logFilter.setCustomValidity('');
                 logFilter.removeAttribute('aria-invalid');
@@ -591,8 +591,12 @@ return view.extend({
         }
 
         function resumeLogs() {
-            if (logStopped || !pageVisible || startupBusy())
+            if (logStopped || !pageVisible)
                 return;
+            if (startupBusy()) {
+                deferLogs();
+                return;
+            }
             logsDeferred = false;
             if (!streamController)
                 startLogStream(true);
@@ -605,8 +609,12 @@ return view.extend({
                 state = state || {};
                 if (state.ok === false)
                     throw new Error(state.error || _('Unable to read NftFlow startup state.'));
-                if (state.state === 'failed')
-                    throw new Error(_('NftFlow failed to reach the requested state.'));
+                if (state.state === 'failed') {
+                    return callStatus().then(function(result) {
+                        updateStatus(result);
+                        throw new Error(result.state_error || _('NftFlow failed to reach the requested state.'));
+                    });
+                }
 
                 var running = state.running === true;
                 var ready = state.ready === true;
