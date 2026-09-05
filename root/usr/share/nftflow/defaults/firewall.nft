@@ -15,8 +15,7 @@ table inet nftflow {
         type filter hook prerouting priority mangle - 1;
         policy accept;
         ct direction reply counter return
-        meta mark 0x00010001 meta mark set 0x00000000
-        meta mark & 0x000000ff != 0x00000000 counter return
+        meta mark & 0x000000fe != 0x00000000 counter return
         meta l4proto { tcp, udp } th dport 53 meta mark set 0x00000001 tproxy to :%port% counter accept
         fib daddr type local return
         meta nfproto ipv4 ip daddr @nftflow_bypass4 return
@@ -29,10 +28,10 @@ table inet nftflow {
         meta skgid %gid% counter return
         ct direction reply counter return
         meta mark & 0x000000ff != 0x00000000 counter return
-        meta l4proto { tcp, udp } th dport 53 meta mark set 0x00010001 counter accept
+        meta l4proto { tcp, udp } th dport 53 meta mark set 0x00000001 counter accept
         fib daddr type local return
         meta nfproto ipv4 ip daddr @nftflow_bypass4 return
         meta nfproto ipv6 ip6 daddr @nftflow_bypass6 return
-        meta l4proto { tcp, udp } meta mark set 0x00010001 counter accept
+        meta l4proto { tcp, udp } meta mark set 0x00000001 counter accept
     }
 }
