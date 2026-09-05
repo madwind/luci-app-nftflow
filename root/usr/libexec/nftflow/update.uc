@@ -15,7 +15,6 @@ const PROBE_CACHE = '/tmp/openwrt-update-probe';
 const PROBE_TTL = 300;
 const FETCH = '/bin/uclient-fetch';
 const SELF = '/usr/libexec/nftflow/update.uc';
-const SERVICE_STATE = `${RUNTIME}/state.json`;
 const MANIFEST_URL = 'https://github.com/madwind/luci-app-nftflow/releases/latest/download/nftflow-update.json';
 const RELEASE_BASE = 'https://github.com/madwind/luci-app-nftflow/releases/download/';
 const GEOIP_URL = 'https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat';
@@ -232,25 +231,10 @@ function nftflow_service_running() {
     } catch (e) {}
     return false;
 }
-function nftflow_service_state() {
-    let state = parse_json(read_text(SERVICE_STATE) || '');
-    return type(state) == 'object' ? `${state.state || ''}` : '';
-}
-function wait_nftflow_ready() {
-    let stable = 0;
-    for (let i = 0; i < 45; i++) {
-        if (nftflow_service_running() && nftflow_service_state() == 'ready') { stable++; if (stable >= 2) return true; }
-        else stable = 0;
-        system('sleep 1');
-    }
-    return false;
-}
-function recover_nftflow(kind, state, was_running, message) {
-    if (!was_running) return true;
+function restore_nftflow(kind, state, was_running, message) {
+    if (!was_running) return;
     set_phase(kind, state, 'restarting', message);
-    if (quiet('/etc/init.d/nftflow start') && wait_nftflow_ready()) return true;
-    quiet('/etc/init.d/nftflow stop');
-    return false;
+    quiet('/etc/init.d/nftflow start');
 }
 function worker_nftflow(state) {
     if (!state.download_url || !state.sha256 || !state.latest_version) return fail_worker('nftflow', state, 'cached NftFlow check data is incomplete; check updates again');
@@ -273,14 +257,12 @@ function worker_nftflow(state) {
     let installed = capture(`NFTFLOW_DEFER_RESTART=1 apk --network=no add --allow-untrusted --upgrade ${q(package_path)}`); fs.unlink(package_path);
     if (!installed.ok) {
         let detail = compact_error(installed.output);
-        if (was_running && !recover_nftflow('nftflow', state, true, 'Restoring NftFlow after failed package installation'))
-            detail += ' NftFlow did not return to ready state and was left stopped.';
+        restore_nftflow('nftflow', state, was_running, 'Restoring NftFlow after failed package installation');
         return fail_worker('nftflow', state, `NftFlow installation failed: ${trim(detail)}`);
     }
     state.post_check_error = null;
-    if (was_running && !recover_nftflow('nftflow', state, true, 'Starting NftFlow after package update'))
-        append_post_error(state, 'NftFlow did not reach ready state after package installation and was left stopped.');
-    let restart_error = state.post_check_error; verify_installed('nftflow', state, state.latest_version); if (restart_error) append_post_error(state, restart_error);
+    restore_nftflow('nftflow', state, was_running, 'Starting NftFlow after package update');
+    verify_installed('nftflow', state, state.latest_version);
     return done_worker('nftflow', state, 'NftFlow updated successfully');
 }
 function worker_xray(state) {
@@ -305,14 +287,12 @@ function worker_xray(state) {
     let installed = capture(`apk ${cache_option} --network=no add --upgrade ${q(constraint)}`); quiet(`rm -rf ${q(download_dir)}`);
     if (!installed.ok) {
         let detail = compact_error(installed.output);
-        if (was_running && !recover_nftflow('xray', state, true, 'Restoring NftFlow after failed xray-core installation'))
-            detail += ' NftFlow did not return to ready state and was left stopped.';
+        restore_nftflow('xray', state, was_running, 'Restoring NftFlow after failed xray-core installation');
         return fail_worker('xray', state, `xray-core installation failed: ${trim(detail)}`);
     }
     state.post_check_error = null;
-    if (was_running && !recover_nftflow('xray', state, true, 'Starting NftFlow after xray-core update'))
-        append_post_error(state, 'NftFlow did not reach ready state after xray-core installation and was left stopped.');
-    let restart_error = state.post_check_error; verify_installed('xray', state, expected); if (restart_error) append_post_error(state, restart_error);
+    restore_nftflow('xray', state, was_running, 'Starting NftFlow after xray-core update');
+    verify_installed('xray', state, expected);
     return done_worker('xray', state, 'Xray Core updated successfully');
 }
 
@@ -433,14 +413,14 @@ function worker_geo(state) {
     if (had_previous && fs.rename(cfg.path, backup) !== true) {
         fs.unlink(download);
         let error = 'cannot preserve previous GeoData file';
-        if (was_running && !recover_nftflow(kind, state, true, 'Restoring NftFlow after failed GeoData installation')) error += '; NftFlow recovery failed';
+        restore_nftflow(kind, state, was_running, 'Restoring NftFlow after failed GeoData installation');
         return fail_worker(kind, state, error);
     }
     if (fs.rename(download, cfg.path) !== true) {
         if (had_previous) fs.rename(backup, cfg.path);
         fs.unlink(download);
         let error = `cannot atomically replace ${cfg.path}`;
-        if (was_running && !recover_nftflow(kind, state, true, 'Restoring NftFlow after failed GeoData installation')) error += '; NftFlow recovery failed';
+        restore_nftflow(kind, state, was_running, 'Restoring NftFlow after failed GeoData installation');
         return fail_worker(kind, state, error);
     }
     fs.chmod(cfg.path, 0o644);
@@ -448,22 +428,10 @@ function worker_geo(state) {
     if (!persisted.ok || read_geo_version(kind) != expected_version) {
         let restored = restore_geo(kind, cfg, backup, had_previous, old_version, state);
         let error = restored.ok ? (persisted.error || 'installed GeoData version metadata failed local verification') : `GeoData metadata update failed and rollback failed: ${restored.error}`;
-        if (was_running && !recover_nftflow(kind, state, true, 'Restoring NftFlow after failed GeoData installation')) return fail_worker(kind, state, `${error}; NftFlow recovery failed`);
+        restore_nftflow(kind, state, was_running, 'Restoring NftFlow after failed GeoData installation');
         return fail_worker(kind, state, error);
     }
-    if (was_running) {
-        set_phase(kind, state, 'restarting', 'Starting NftFlow with updated GeoData');
-        if (!quiet('/etc/init.d/nftflow start') || !wait_nftflow_ready()) {
-            quiet('/etc/init.d/nftflow stop');
-            let restored = restore_geo(kind, cfg, backup, had_previous, old_version, state);
-            if (restored.ok) {
-                let recovered = quiet('/etc/init.d/nftflow start') && wait_nftflow_ready();
-                if (!recovered) quiet('/etc/init.d/nftflow stop');
-                return fail_worker(kind, state, recovered ? 'NftFlow rejected updated GeoData; previous GeoData was restored' : 'NftFlow rejected updated GeoData; previous GeoData was restored but service recovery also failed');
-            }
-            return fail_worker(kind, state, `NftFlow failed after GeoData update and rollback failed: ${restored.error}`);
-        }
-    }
+    restore_nftflow(kind, state, was_running, 'Starting NftFlow with updated GeoData');
     fs.unlink(backup);
     state.local_version = expected_version; state.source_version = expected_version; state.latest_version = expected_version; state.update_available = false; state.post_check_error = null;
     return done_worker(kind, state, `${kind} updated successfully`);
@@ -517,6 +485,14 @@ function worker(kind) {
 }
 function software_component_status(kind) {
     let state = normalize_state(kind, read_state(kind)), lightweight = active_status(state), latest = state.latest_version;
+    if (state.post_check_error == 'NftFlow did not reach ready state after package installation and was left stopped.' ||
+        state.post_check_error == 'NftFlow did not reach ready state after xray-core installation and was left stopped.' ||
+        state.post_check_error == 'NftFlow did not recover after the automatic update batch and was left stopped.' ||
+        state.post_check_error == 'NftFlow required GeoData rollback after the automatic update batch.') {
+        if (!nftflow_service_running()) quiet('/etc/init.d/nftflow start');
+        state.post_check_error = null;
+        save_state(kind, state);
+    }
     let installed = lightweight ? state.installed_version : installed_version(PACKAGES[kind]);
     let available = lightweight ? state.update_available : (state.check_ok === true && latest ? update_available(installed, latest) : null);
     return {
@@ -768,20 +744,12 @@ function auto_run() {
                 batch_stop(kind, states[kind], 'Automatic update batch aborted');
             }
         }
-        if (was_running && (!quiet('/etc/init.d/nftflow start') || !wait_nftflow_ready())) { quiet('/etc/init.d/nftflow stop'); quiet(`logger -t nftflow-update ${q('NftFlow recovery after automatic update failure did not reach ready state; service was left stopped')}`); }
+        if (was_running) quiet('/etc/init.d/nftflow start');
         clear_batch_files(); return { ok: false, updated: applied_count > 0, error: failure };
     }
     if (was_running) {
         for (let kind in selected) set_phase(kind, states[kind], 'restarting', 'Starting NftFlow after automatic update batch');
-        if (!quiet('/etc/init.d/nftflow start') || !wait_nftflow_ready()) {
-            quiet('/etc/init.d/nftflow stop'); restore_all_geo();
-            let recovered = quiet('/etc/init.d/nftflow start') && wait_nftflow_ready(); if (!recovered) quiet('/etc/init.d/nftflow stop');
-            for (let kind in selected) {
-                if (geo_kind(kind)) batch_fail(kind, states[kind], recovered ? 'Updated GeoData was rolled back because NftFlow did not reach ready state' : 'Updated GeoData was rolled back and NftFlow recovery also failed');
-                else { append_post_error(states[kind], recovered ? 'NftFlow required GeoData rollback after the automatic update batch.' : 'NftFlow did not recover after the automatic update batch and was left stopped.'); batch_done(kind, states[kind], `${kind} updated with recovery warning`); }
-            }
-            clear_batch_files(); return { ok: false, updated: true };
-        }
+        quiet('/etc/init.d/nftflow start');
     }
     for (let kind in selected) batch_done(kind, states[kind], `${kind} updated successfully`);
     clear_batch_files(); return { ok: true, updated: true };
