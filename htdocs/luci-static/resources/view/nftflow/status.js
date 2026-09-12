@@ -12,6 +12,13 @@ var callStatus = rpc.declare({
     reject: true
 });
 
+var callPackageVersion = rpc.declare({
+    object: 'luci.nftflow.package',
+    method: 'version',
+    expect: { '': {} },
+    reject: true
+});
+
 var callServiceRuntime = rpc.declare({
     object: 'luci.nftflow',
     method: 'service_runtime',
@@ -137,13 +144,15 @@ return view.extend({
         return Promise.all([
             L.resolveDefault(callStatus(), { ok: false, error: _('Unable to read service status.') }),
             L.resolveDefault(callTraffic(), { ok: true, available: false, inbounds: [], outbounds: [] }),
-            L.resolveDefault(callLogRead(LOG_LINES, false, true), [])
+            L.resolveDefault(callLogRead(LOG_LINES, false, true), []),
+            L.resolveDefault(callPackageVersion(), { ok: false })
         ]);
     },
 
     render: function(data) {
         document.title = _('NftFlow | Overview');
 
+        var version = E('span');
         var service = E('span', { 'aria-live': 'polite' });
         var command = E('code');
         var uptime = E('span');
@@ -396,6 +405,10 @@ return view.extend({
             return button;
         }
 
+        var packageVersion = data && data[3];
+        nftflowUi.setText(version, packageVersion && packageVersion.ok === true && packageVersion.version
+            ? packageVersion.version : '—');
+
         var initialStatus = data && data[0];
         if (initialStatus && initialStatus.ok === true)
             updateStatus(initialStatus);
@@ -425,6 +438,7 @@ return view.extend({
                 E('h3', { 'class': 'cbi-section-title' }, _('Runtime')),
                 E('table', { 'class': 'table cbi-section-table' }, [
                     E('tbody', {}, [
+                        tableRow(_('Version'), version),
                         tableRow(_('Service'), service),
                         tableRow(_('Executable'), command),
                         tableRow(_('Uptime'), uptime),
