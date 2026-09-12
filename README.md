@@ -9,7 +9,7 @@ The backend is implemented with OpenWrt native **ucode**. No Lua runtime or LuCI
 OpenWrt 25.12+ uses the signed `madwind/openwrt-packages` APK repository:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/madwind/openwrt-packages/main/install.sh | sh
+wget -O- https://raw.githubusercontent.com/madwind/openwrt-packages/main/install.sh | sh
 apk add luci-app-nftflow
 ```
 
