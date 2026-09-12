@@ -1,18 +1,24 @@
 # luci-app-nftflow
 
-`luci-app-nftflow` is a LuCI network traffic management plugin for OpenWrt. It provides managed process lifecycle, YAML configuration editing, nftables firewall rules, policy routing, runtime traffic statistics and self-updates.
+`luci-app-nftflow` is a LuCI network traffic management plugin for OpenWrt. It provides managed process lifecycle, YAML configuration editing, nftables firewall rules, policy routing and runtime traffic statistics.
 
 The backend is implemented with OpenWrt native **ucode**. No Lua runtime or LuCI Lua compatibility libraries are required.
 
 ## Install
 
-OpenWrt 25.12+:
+OpenWrt 25.12+ uses the signed `madwind/openwrt-packages` APK repository:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/madwind/luci-app-nftflow/master/install.sh | sh
+wget -qO- https://raw.githubusercontent.com/madwind/openwrt-packages/main/install.sh | sh
+apk add luci-app-nftflow
 ```
 
-The installer reads the latest GitHub Release metadata, verifies the APK against the release asset SHA256 digest and installs or upgrades NftFlow.
+After the repository is configured, update package metadata and upgrade NftFlow normally with:
+
+```sh
+apk update
+apk add --upgrade luci-app-nftflow
+```
 
 ## Features
 
@@ -28,8 +34,6 @@ The installer reads the latest GitHub Release metadata, verifies the APK against
 - Edit, save, install and uninstall policy routing from the editor
 - Start the managed process before installing routing and firewall rules
 - Automatically remove firewall and routing rules after the managed process stops or exits unexpectedly
-- Check and update NftFlow
-- Optional weekly automatic update checks
 
 ## Runtime model
 
