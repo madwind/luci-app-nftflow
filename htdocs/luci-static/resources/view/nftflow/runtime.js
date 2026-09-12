@@ -105,11 +105,6 @@ return view.extend({
         var traffic = map.section(form.NamedSection, 'main', 'nftflow', _('Traffic rules'));
         traffic.anonymous = true;
 
-        option = traffic.option(form.Value, 'tproxy_port', _('Transparent proxy port'), _('Port substituted for the %port% Firewall placeholder.'));
-        option.datatype = 'port';
-        option.rmempty = false;
-        option.default = '12345';
-
         option = traffic.option(form.Value, 'run_gid', _('Process GID'), _('Numeric primary group identity used by the runtime process and the %gid% Firewall placeholder.'));
         option.datatype = 'uinteger';
         option.rmempty = false;
