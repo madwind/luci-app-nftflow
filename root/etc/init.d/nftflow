@@ -1,0 +1,230 @@
+#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+START=95
+STOP=15
+
+NAME=nftflow
+CTL=/usr/libexec/nftflow/nftflowctl
+GROUP_STATE=/etc/nftflow/groups.created
+PID_FILE=/var/run/nftflow/runtime.pid
+
+extra_command "cleanup_groups" "Remove groups created by NftFlow"
+
+load_main() {
+    config_load nftflow
+    config_get enabled main enabled 0
+    config_get runtime_bin main command ''
+    config_get geoip_file main geoip_file ''
+    config_get geosite_file main geosite_file ''
+    config_get run_gid main run_gid 23333
+    nofile=65536
+}
+
+record_created_group() {
+    mkdir -p "${GROUP_STATE%/*}" 2>/dev/null || return 1
+    touch "$GROUP_STATE" 2>/dev/null || return 1
+    chmod 0600 "$GROUP_STATE" 2>/dev/null || true
+    grep -qxF "$run_group:$run_gid" "$GROUP_STATE" 2>/dev/null ||
+        printf '%s:%s\n' "$run_group" "$run_gid" >> "$GROUP_STATE"
+}
+
+remove_created_groups() {
+    local keep_gid="${1:-}" state_tmp
+    [ -f "$GROUP_STATE" ] || return 0
+
+    state_tmp="${GROUP_STATE}.tmp.$$"
+    : > "$state_tmp" 2>/dev/null || return 1
+    chmod 0600 "$state_tmp" 2>/dev/null || true
+
+    while IFS=: read -r group gid; do
+        case "$gid" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        case "$group" in
+            ''|*[!A-Za-z0-9_-]*) continue ;;
+        esac
+
+        if [ -n "$keep_gid" ] && [ "$gid" = "$keep_gid" ]; then
+            printf '%s:%s\n' "$group" "$gid" >> "$state_tmp"
+            continue
+        fi
+
+        grep -q "^${group}:[^:]*:${gid}:" /etc/group 2>/dev/null || continue
+        awk -F: -v gid="$gid" '$4 == gid { found = 1 } END { exit found ? 0 : 1 }' /etc/passwd 2>/dev/null && {
+            logger -t nftflow "keeping group $group because GID $gid is used by a passwd entry"
+            printf '%s:%s\n' "$group" "$gid" >> "$state_tmp"
+            continue
+        }
+
+        if command -v delgroup >/dev/null 2>&1; then
+            delgroup "$group" >/dev/null 2>&1 || true
+        fi
+        if grep -q "^${group}:[^:]*:${gid}:" /etc/group 2>/dev/null; then
+            tmp="/etc/group.nftflow.$$"
+            awk -F: -v group="$group" -v gid="$gid" '!( $1 == group && $3 == gid )' /etc/group > "$tmp" 2>/dev/null &&
+                cat "$tmp" > /etc/group
+            rm -f "$tmp"
+        fi
+        if grep -q "^${group}:[^:]*:${gid}:" /etc/group 2>/dev/null; then
+            logger -t nftflow "cannot remove group $group with gid $gid"
+            printf '%s:%s\n' "$group" "$gid" >> "$state_tmp"
+        fi
+    done < "$GROUP_STATE"
+
+    if [ -s "$state_tmp" ]; then
+        mv "$state_tmp" "$GROUP_STATE" || {
+            rm -f "$state_tmp"
+            return 1
+        }
+        chmod 0600 "$GROUP_STATE" 2>/dev/null || true
+    else
+        rm -f "$state_tmp" "$GROUP_STATE"
+    fi
+}
+
+cleanup_groups() {
+    load_main
+    if service_process_running; then
+        logger -t nftflow "refusing to remove runtime group while the managed process is running"
+        return 1
+    fi
+    remove_created_groups
+}
+
+ensure_group() {
+    case "$run_gid" in
+        ''|*[!0-9]*) logger -t nftflow "invalid run_gid: $run_gid"; return 1 ;;
+        0) logger -t nftflow "run_gid must be non-zero"; return 1 ;;
+    esac
+
+    remove_created_groups "$run_gid" || {
+        logger -t nftflow "cannot clean stale runtime groups"
+        return 1
+    }
+
+    group_for_gid="$(awk -F: -v gid="$run_gid" '$3 == gid { print $1; exit }' /etc/group 2>/dev/null)"
+    if [ -n "$group_for_gid" ]; then
+        case "$group_for_gid" in
+            *[!A-Za-z0-9_-]*) logger -t nftflow "invalid existing group name for GID $run_gid"; return 1 ;;
+        esac
+        run_group="$group_for_gid"
+        [ "$run_group" = "nftflow" ] || logger -t nftflow "using existing group $run_group for GID $run_gid"
+    else
+        run_group=nftflow
+        if grep -q "^${run_group}:" /etc/group 2>/dev/null; then
+            run_group="nftflow-${run_gid}"
+        fi
+        grep -q "^${run_group}:" /etc/group 2>/dev/null && {
+            logger -t nftflow "group $run_group already exists with a different GID"
+            return 1
+        }
+
+        if command -v addgroup >/dev/null 2>&1; then
+            addgroup -S -g "$run_gid" "$run_group" 2>/dev/null || \
+                addgroup -g "$run_gid" "$run_group" 2>/dev/null || true
+        fi
+        if ! grep -q "^${run_group}:[^:]*:${run_gid}:" /etc/group 2>/dev/null; then
+            grep -q "^[^:]*:[^:]*:${run_gid}:" /etc/group 2>/dev/null && {
+                logger -t nftflow "GID $run_gid is already used by another group"
+                return 1
+            }
+            printf '%s:x:%s:\n' "$run_group" "$run_gid" >> /etc/group 2>/dev/null || {
+                logger -t nftflow "cannot write /etc/group for $run_group"
+                return 1
+            }
+        fi
+        record_created_group || logger -t nftflow "cannot record created group $run_group"
+    fi
+
+    grep -q "^${run_group}:[^:]*:${run_gid}:" /etc/group 2>/dev/null || {
+        logger -t nftflow "cannot resolve a group with gid $run_gid"
+        return 1
+    }
+}
+
+service_process_running() {
+    local pid expected actual
+    pid="$(cat "$PID_FILE" 2>/dev/null)"
+    case "$pid" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$pid" -gt 1 ] || return 1
+    kill -0 "$pid" >/dev/null 2>&1 || return 1
+    [ -n "$runtime_bin" ] || return 1
+    expected="$(readlink -f "$runtime_bin" 2>/dev/null)"
+    actual="$(readlink -f "/proc/$pid/exe" 2>/dev/null)"
+    [ -n "$expected" ] && [ "$actual" = "$expected" ] || return 1
+}
+
+append_runtime_argument() {
+    procd_append_param command "$1"
+}
+
+start_service() {
+    load_main
+    [ "$enabled" = "1" ] || return 0
+
+    case "$runtime_bin" in
+        /*) ;;
+        *) logger -t nftflow "runtime executable must be an absolute path"; return 1 ;;
+    esac
+    [ -x "$runtime_bin" ] || {
+        logger -t nftflow "runtime executable is not executable: $runtime_bin"
+        return 1
+    }
+    case "$geoip_file" in
+        ''|/*) ;;
+        *) logger -t nftflow "GeoIP database path must be absolute"; return 1 ;;
+    esac
+    case "$geosite_file" in
+        ''|/*) ;;
+        *) logger -t nftflow "GeoSite database path must be absolute"; return 1 ;;
+    esac
+
+    "$CTL" prepare || return 1
+    ensure_group || return 1
+
+    procd_open_instance
+    procd_set_param command "$CTL" run-guarded "$runtime_bin"
+    config_list_foreach main argument append_runtime_argument
+    if [ -n "$geoip_file" ] || [ -n "$geosite_file" ]; then
+        procd_set_param env \
+            "NFTFLOW_GEOIP_FILE=$geoip_file" \
+            "NFTFLOW_GEOSITE_FILE=$geosite_file"
+    fi
+    procd_set_param user root
+    procd_set_param group "$run_group"
+    procd_set_param limits nofile="${nofile} ${nofile}"
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_set_param respawn 60 5 3
+    procd_close_instance
+}
+
+stop_service() {
+    local pid
+    load_main
+    if service_process_running; then
+        pid="$(cat "$PID_FILE" 2>/dev/null)"
+        "$CTL" state stopping "$pid" 'service stop requested' >/dev/null 2>&1 || true
+    fi
+}
+
+service_stopped() {
+    "$CTL" cleanup
+}
+
+reload_service() {
+    load_main
+    if [ "$enabled" = "1" ]; then
+        stop
+        start
+    else
+        stop
+    fi
+}
+
+service_triggers() {
+    procd_add_reload_trigger nftflow
+}

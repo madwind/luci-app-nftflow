@@ -1,0 +1,194 @@
+name: Release
+
+run-name: Release · ${{ github.ref_name }}
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - version.env
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-release:
+    name: Build release APK
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      title: ${{ steps.metadata.outputs.title }}
+      asset: ${{ steps.metadata.outputs.asset }}
+    env:
+      OPENWRT_VERSION: "25.12.5"
+      OPENWRT_TARGET: x86
+      OPENWRT_SUBTARGET: "64"
+      SDK_ARCHIVE: openwrt-sdk-25.12.5-x86-64_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+      SDK_SHA256: "0c8df0151a1e88feb7c03d694d61f6a18d51872815b7c811d76e2b77504d5e9c"
+      SDK_DIRECTORY: openwrt-sdk-25.12.5-x86-64_gcc-14.3.0_musl.Linux-x86_64
+      SDK_PREP_REV: "2"
+      SDK_CACHE_ROOT: ${{ github.workspace }}/.cache/openwrt-sdk
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Resolve package and release versions
+        id: metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" != "refs/heads/master" ]]; then
+            echo "Releases must run from master" >&2
+            exit 1
+          fi
+
+          source version.env
+          if [[ ! "$NFTFLOW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$NFTFLOW_RELEASE" =~ ^[0-9]+$ ]]; then
+            echo "Invalid NFTFLOW_VERSION or NFTFLOW_RELEASE in version.env: $NFTFLOW_VERSION-r$NFTFLOW_RELEASE" >&2
+            exit 1
+          fi
+          package_version="$NFTFLOW_VERSION-r$NFTFLOW_RELEASE"
+          expected_tag="v${package_version}"
+
+          echo "version=$package_version" >> "$GITHUB_OUTPUT"
+          echo "tag=$expected_tag" >> "$GITHUB_OUTPUT"
+          echo "title=luci-app-nftflow ${package_version}" >> "$GITHUB_OUTPUT"
+          echo "asset=dist/luci-app-nftflow-${package_version}.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Restore prepared OpenWrt SDK
+        id: sdk-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.SDK_CACHE_ROOT }}
+          key: ${{ runner.os }}-openwrt-sdk-${{ env.OPENWRT_VERSION }}-${{ env.OPENWRT_TARGET }}-${{ env.OPENWRT_SUBTARGET }}-${{ env.SDK_ARCHIVE }}-${{ env.SDK_SHA256 }}-prepared-v${{ env.SDK_PREP_REV }}
+
+      - name: Download OpenWrt SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sdk_url="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/${SDK_ARCHIVE}"
+          sdk_file="$RUNNER_TEMP/$SDK_ARCHIVE"
+          mkdir -p "$SDK_CACHE_ROOT"
+          curl \
+            --fail \
+            --location \
+            --retry 5 \
+            --retry-all-errors \
+            --show-error \
+            --output "$sdk_file" \
+            "$sdk_url"
+
+          printf '%s  %s\n' "$SDK_SHA256" "$sdk_file" |
+            sha256sum --check --strict
+
+          tar \
+            --extract \
+            --zstd \
+            --file "$sdk_file" \
+            --directory "$SDK_CACHE_ROOT"
+
+      - name: Verify OpenWrt SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x "$SDK_CACHE_ROOT/$SDK_DIRECTORY/staging_dir/host/bin/apk"
+          test -x "$SDK_CACHE_ROOT/$SDK_DIRECTORY/staging_dir/host/bin/fakeroot"
+
+      - name: Prepare OpenWrt SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          OPENWRT_SDK: ${{ env.SDK_CACHE_ROOT }}/${{ env.SDK_DIRECTORY }}
+        run: |
+          set -euo pipefail
+
+          sdk="$OPENWRT_SDK"
+          sdk_prepared="$sdk/.nftflow-sdk-prepared-v$SDK_PREP_REV"
+          test -x "$sdk/scripts/feeds"
+
+          printf 'SDK preparation: updating feeds\n'
+          "$sdk/scripts/feeds" update base packages luci
+          printf 'SDK preparation: installing feeds\n'
+          "$sdk/scripts/feeds" install -a >/dev/null
+          test -f "$sdk/feeds/luci/luci.mk"
+
+          if [[ ! -f "$sdk/.config" ]]; then
+            printf 'SDK preparation: running defconfig\n'
+            make -C "$sdk" defconfig
+          fi
+
+          printf 'SDK preparation: pruning feed histories\n'
+          find "$sdk/feeds" -mindepth 2 -maxdepth 2 -type d -name .git -prune -exec rm -rf -- {} +
+          touch "$sdk_prepared"
+
+      - name: Save prepared OpenWrt SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.SDK_CACHE_ROOT }}
+          key: ${{ runner.os }}-openwrt-sdk-${{ env.OPENWRT_VERSION }}-${{ env.OPENWRT_TARGET }}-${{ env.OPENWRT_SUBTARGET }}-${{ env.SDK_ARCHIVE }}-${{ env.SDK_SHA256 }}-prepared-v${{ env.SDK_PREP_REV }}
+
+      - name: Build release APK
+        shell: bash
+        env:
+          OPENWRT_SDK: ${{ env.SDK_CACHE_ROOT }}/${{ env.SDK_DIRECTORY }}
+          SDK_PREP_REV: ${{ env.SDK_PREP_REV }}
+        run: |
+          set -euo pipefail
+          bash -n scripts/build-apk.sh
+          bash ./scripts/build-apk.sh
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: nftflow-release-apk
+          path: ${{ steps.metadata.outputs.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-release:
+    name: Publish GitHub release
+    needs: build-release
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Download release artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: nftflow-release-apk
+          path: release-artifact
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.build-release.outputs.tag }}
+          RELEASE_TITLE: ${{ needs.build-release.outputs.title }}
+          RELEASE_ASSET: release-artifact/luci-app-nftflow-${{ needs.build-release.outputs.version }}.apk
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$RELEASE_ASSET" --clobber
+          else
+            gh release create "$RELEASE_TAG" "$RELEASE_ASSET" \
+              --target "$GITHUB_SHA" \
+              --generate-notes \
+              --title "$RELEASE_TITLE"
+          fi

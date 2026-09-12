@@ -1,0 +1,116 @@
+#!/bin/sh
+# Thin dispatcher: each subsystem owns its current implementation.
+
+RUNTIME_CTL=/usr/libexec/nftflow/runtime.uc
+CONFIG_CTL=/usr/libexec/nftflow/config.uc
+FIREWALL_CTL=/usr/libexec/nftflow/firewall.uc
+ROUTING_CTL=/usr/libexec/nftflow/routing.uc
+
+run_ucode() {
+    /usr/bin/ucode "$@"
+}
+
+if [ "$1" = "run-guarded" ]; then
+    shift
+    runtime_bin="$1"
+    shift
+    child_pid=
+    stop_requested=0
+    failure_message=
+
+    set_state() {
+        state_name="$1"
+        state_pid="${2:-}"
+        state_message="${3:-}"
+        run_ucode "$RUNTIME_CTL" state "$state_name" "$state_pid" "$state_message" >/dev/null 2>&1 || true
+    }
+
+    child_running() {
+        [ -n "$child_pid" ] || return 1
+        kill -0 "$child_pid" >/dev/null 2>&1 || return 1
+        child_state="$(awk '/^State:/ { print $2; exit }' "/proc/$child_pid/status" 2>/dev/null)"
+        [ -n "$child_state" ] && [ "$child_state" != "Z" ]
+    }
+
+    terminate_child() {
+        [ -z "$child_pid" ] && return 0
+        if child_running; then
+            kill -TERM "$child_pid" >/dev/null 2>&1 || true
+            _wait=1
+            while [ "$_wait" -le 5 ]; do
+                child_running || break
+                sleep 1
+                _wait=$((_wait + 1))
+            done
+            child_running && kill -KILL "$child_pid" >/dev/null 2>&1 || true
+        fi
+        wait "$child_pid" 2>/dev/null || true
+    }
+
+    cleanup() {
+        trap - EXIT TERM INT
+        terminate_child
+        run_ucode "$RUNTIME_CTL" cleanup-rules >/dev/null 2>&1 || true
+        if [ "$stop_requested" = "1" ]; then
+            set_state stopped
+        else
+            set_state failed "" "${failure_message:-Runtime process exited unexpectedly}"
+        fi
+    }
+
+    stop_child() {
+        stop_requested=1
+        set_state stopping "$child_pid" "stop requested"
+        exit 143
+    }
+
+    trap cleanup EXIT
+    trap stop_child TERM INT
+    mkdir -p /var/run/nftflow || exit 1
+
+    "$runtime_bin" "$@" &
+    child_pid=$!
+    set_state starting "$child_pid" "Runtime process is starting"
+
+    if ! child_running; then
+        wait "$child_pid" 2>/dev/null
+        child_status=$?
+        child_pid=
+        failure_message='Runtime process exited during startup'
+        [ "$child_status" -ne 0 ] || child_status=1
+        exit "$child_status"
+    fi
+
+    if ! run_ucode "$RUNTIME_CTL" bootstrap-rules >/dev/null 2>&1; then
+        failure_message='Traffic rule bootstrap failed during startup'
+        exit 1
+    fi
+
+    if ! child_running; then
+        wait "$child_pid" 2>/dev/null
+        child_status=$?
+        child_pid=
+        failure_message='Runtime process exited while traffic rules were being installed'
+        [ "$child_status" -ne 0 ] || child_status=1
+        exit "$child_status"
+    fi
+
+    set_state ready "$child_pid" 'Runtime process and traffic rules are ready'
+    wait "$child_pid"
+    child_status=$?
+    failure_message="Runtime process exited with status $child_status"
+    exit "$child_status"
+fi
+
+case "$1" in
+    config-read|config-apply-file)
+        exec /usr/bin/ucode "$CONFIG_CTL" "$@" ;;
+    firewall|firewall-runtime|firewall-save-file)
+        exec /usr/bin/ucode "$FIREWALL_CTL" "$@" ;;
+    route|route-apply|routing-read|routing-runtime|routing-save-file)
+        exec /usr/bin/ucode "$ROUTING_CTL" "$@" ;;
+    status|prepare|cleanup|bootstrap-rules|cleanup-rules|state|action|component|component-start|component-status)
+        exec /usr/bin/ucode "$RUNTIME_CTL" "$@" ;;
+    *)
+        printf '%s\n' '{"ok":false,"error":"unsupported nftflowctl command"}'; exit 1 ;;
+esac
