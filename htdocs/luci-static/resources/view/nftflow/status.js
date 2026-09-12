@@ -152,9 +152,7 @@ return view.extend({
     render: function(data) {
         document.title = _('NftFlow | Overview');
 
-        var version = E('span');
         var service = E('span', { 'aria-live': 'polite' });
-        var command = E('code');
         var uptime = E('span');
         var firewall = E('span', { 'aria-live': 'polite' });
         var routing = E('span', { 'aria-live': 'polite' });
@@ -213,7 +211,6 @@ return view.extend({
                         ? (pid === null ? _('Running') : _('Running · PID %s').format(pid))
                         : _('Stopped')
                     : _('Unavailable'));
-            nftflowUi.setText(command, result.runtime_command || '—');
             nftflowUi.setText(uptime, running ? formatUptime(result.uptime) : '—');
             nftflowUi.setState(firewall, result.firewall_active === true ? 'ok' : 'warn', result.firewall_active === true ? _('Active') : _('Inactive'));
             nftflowUi.setState(routing, result.route_active === true ? 'ok' : 'warn', result.route_active === true
@@ -406,8 +403,8 @@ return view.extend({
         }
 
         var packageVersion = data && data[3];
-        nftflowUi.setText(version, packageVersion && packageVersion.ok === true && packageVersion.version
-            ? packageVersion.version : '—');
+        var version = packageVersion && packageVersion.ok === true && packageVersion.version
+            ? packageVersion.version : '—';
 
         var initialStatus = data && data[0];
         if (initialStatus && initialStatus.ok === true)
@@ -433,14 +430,15 @@ return view.extend({
 
         var root = E('div', { 'class': 'cbi-map' }, [
             E('h2', { 'class': 'cbi-map-title', 'name': 'content' }, _('Overview')),
-            E('div', { 'class': 'cbi-map-descr' }, _('Managed process state, traffic statistics and NftFlow traffic-rule lifecycle.')),
+            E('div', { 'class': 'cbi-map-descr' }, [
+                _('Managed process state, traffic statistics and NftFlow traffic-rule lifecycle.'),
+                ' · ', _('Version'), ': ', E('strong', {}, version)
+            ]),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Runtime')),
                 E('table', { 'class': 'table cbi-section-table' }, [
                     E('tbody', {}, [
-                        tableRow(_('Version'), version),
                         tableRow(_('Service'), service),
-                        tableRow(_('Executable'), command),
                         tableRow(_('Uptime'), uptime),
                         tableRow(_('Firewall'), firewall),
                         tableRow(_('Routing'), routing)
