@@ -52,11 +52,8 @@ function normalize(raw) {
 function render_template(raw) {
     let source = normalize(raw);
     let gid = int(uci_get('run_gid', '23333'));
-    let port = int(uci_get('tproxy_port', '12345'));
     if (gid < 1 || gid > 65535) return { ok: false, error: 'run_gid must be between 1 and 65535' };
-    if (port < 1 || port > 65535) return { ok: false, error: 'tproxy_port must be between 1 and 65535' };
     let rendered = replace(source, /%gid%/g, `${gid}`);
-    rendered = replace(rendered, /%port%/g, `${port}`);
     return { ok: true, source, rendered };
 }
 function is_space(c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v'; }
