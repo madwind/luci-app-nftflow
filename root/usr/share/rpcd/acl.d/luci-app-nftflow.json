@@ -1,6 +1,6 @@
 {
     "luci-app-nftflow": {
-        "description": "Manage NftFlow runtime, configuration, firewall, routing and updates",
+        "description": "Manage NftFlow runtime, configuration, firewall and routing",
         "read": {
             "uci": [ "nftflow" ],
             "ubus": {
@@ -13,9 +13,7 @@
                     "firewall_action_status",
                     "routing_read",
                     "routing_runtime",
-                    "config_read",
-                    "update_status",
-                    "update_settings"
+                    "config_read"
                 ],
                 "luci.nftflow.metrics": [ "traffic" ],
                 "luci.nftflow.defaults": [ "firewall", "routing" ]
@@ -33,10 +31,6 @@
                     "routing_save",
                     "routing_install",
                     "routing_uninstall",
-                    "update_check",
-                    "update_install",
-                    "update_set_check",
-                    "update_set_auto",
                     "action"
                 ]
             }

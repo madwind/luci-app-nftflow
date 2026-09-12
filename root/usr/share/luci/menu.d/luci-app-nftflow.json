@@ -29,10 +29,5 @@
         "title": "Routing",
         "order": 5,
         "action": { "type": "view", "path": "nftflow/routing" }
-    },
-    "admin/services/nftflow/updates": {
-        "title": "Updates",
-        "order": 6,
-        "action": { "type": "view", "path": "nftflow/updates" }
     }
 }

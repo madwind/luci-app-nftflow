@@ -10,7 +10,6 @@ let ubus = require('ubus').connect();
 
 const RUNTIME = '/var/run/nftflow';
 const CTL = '/usr/libexec/nftflow/nftflowctl';
-const UPDATE = '/usr/libexec/nftflow/update.uc';
 const SAVED_FIREWALL = '/etc/nftflow/firewall.nft';
 const STATE_FILE = `${RUNTIME}/state.json`;
 const RPC_DIRECTORY_MODE = 448;
@@ -143,11 +142,6 @@ function remove_payload(payload) {
 }
 
 function defer_ctl(request, args, label) { return defer_exec(request, CTL, args, label); }
-function defer_update(request, command, value, label) {
-    let params = [ UPDATE, command ];
-    if (value != null) push(params, `${value}`);
-    return defer_exec(request, '/usr/bin/ucode', params, label);
-}
 function defer_ctl_file(request, command, value, label) {
     let payload = create_payload(value);
     if (!payload) return { ok: false, error: 'unable to create secure RPC temporary file' };
@@ -173,12 +167,6 @@ const methods = {
     routing_uninstall: { args: {}, call: request => defer_ctl(request, [ 'component', 'routing', 'uninstall' ], 'Routing uninstall') },
     config_read: { args: {}, call: request => defer_ctl(request, [ 'config-read' ], 'Configuration read') },
     config_apply: { args: { config: '' }, call: request => defer_ctl_file(request, 'config-apply-file', request_args(request).config || '', 'Configuration save and apply') },
-    update_status: { args: {}, call: request => defer_update(request, 'status', null, 'Update status') },
-    update_check: { args: {}, call: request => defer_update(request, 'check', null, 'NftFlow update check') },
-    update_install: { args: {}, call: request => defer_update(request, 'start', null, 'NftFlow update') },
-    update_settings: { args: {}, call: request => defer_update(request, 'auto-status', null, 'Update settings') },
-    update_set_check: { args: { enabled: 0 }, call: request => defer_update(request, 'auto-set-check', request_args(request).enabled ? 1 : 0, 'Automatic update setting') },
-    update_set_auto: { args: { enabled: 0 }, call: request => defer_update(request, 'auto-set', request_args(request).enabled ? 1 : 0, 'NftFlow automatic update setting') },
     action: {
         args: { name: '' },
         call: request => {

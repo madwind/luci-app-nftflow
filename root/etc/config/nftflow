@@ -1,7 +1,5 @@
 config nftflow 'main'
     option enabled '0'
-    option update_check_enabled '0'
-    option nftflow_auto_update '0'
     option command ''
     option config_file '/etc/nftflow/config.yaml'
     option geoip_file ''
