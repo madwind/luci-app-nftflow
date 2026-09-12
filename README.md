@@ -28,7 +28,7 @@ apk add --upgrade luci-app-nftflow
 - Read optional runtime traffic counters from a user-configured HTTP/HTTPS JSON endpoint
 - Configure dot-separated inbound and outbound JSON object paths for metrics extraction
 - Edit, save, install and uninstall nftables firewall rules from the editor
-- Substitute `%port%` from `nftflow.main.tproxy_port` and `%gid%` from `nftflow.main.run_gid`
+- Substitute `%gid%` from `nftflow.main.run_gid`
 - Optionally expand `%geoip:<tag>%` firewall macros from a user-provided GeoIP database
 - Configure optional GeoIP and GeoSite database paths without runtime-specific defaults
 - Edit, save, install and uninstall policy routing from the editor
