@@ -1,0 +1,40 @@
+{
+    "luci-app-nftflow": {
+        "description": "Manage NftFlow runtime, configuration, firewall and routing",
+        "read": {
+            "uci": [ "nftflow" ],
+            "ubus": {
+                "log": [ "read", ":subscribe" ],
+                "luci.nftflow": [
+                    "status",
+                    "service_runtime",
+                    "firewall_read",
+                    "firewall_runtime",
+                    "firewall_action_status",
+                    "routing_read",
+                    "routing_runtime",
+                    "config_read"
+                ],
+                "luci.nftflow.package": [ "version" ],
+                "luci.nftflow.metrics": [ "traffic" ],
+                "luci.nftflow.defaults": [ "firewall", "routing" ]
+            }
+        },
+        "write": {
+            "uci": [ "nftflow" ],
+            "ubus": {
+                "luci.nftflow": [
+                    "service_sync",
+                    "config_apply",
+                    "firewall_save",
+                    "firewall_install",
+                    "firewall_uninstall",
+                    "routing_save",
+                    "routing_install",
+                    "routing_uninstall",
+                    "action"
+                ]
+            }
+        }
+    }
+}
