@@ -22,13 +22,13 @@ table inet nftflow {
     set nftflow_direct4 {
         type ipv4_addr
         flags dynamic
-        timeout 1d
+        timeout 2h
         size 8192
     }
     set nftflow_direct6 {
         type ipv6_addr
         flags dynamic
-        timeout 1d
+        timeout 2h
         size 8192
     }
     chain nftflow_prerouting {
