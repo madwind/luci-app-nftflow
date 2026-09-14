@@ -11,13 +11,13 @@ REQUIRED_EXECUTABLES=(
     root/usr/libexec/nftflow/nftflowctl
 )
 
-# shellcheck disable=SC1091
-source "$PROJECT/version.env"
-if [[ ! "$NFTFLOW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$NFTFLOW_RELEASE" =~ ^[0-9]+$ ]]; then
-    echo "Invalid NFTFLOW_VERSION or NFTFLOW_RELEASE in version.env: $NFTFLOW_VERSION-r$NFTFLOW_RELEASE" >&2
+package_version="$(sed -n 's/^PKG_VERSION[[:space:]]*:=[[:space:]]*//p' "$PROJECT/Makefile" | head -n1)"
+package_release="$(sed -n 's/^PKG_RELEASE[[:space:]]*:=[[:space:]]*//p' "$PROJECT/Makefile" | head -n1)"
+if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$package_release" =~ ^[0-9]+$ ]]; then
+    echo "Invalid PKG_VERSION or PKG_RELEASE in Makefile: ${package_version:-unset}-r${package_release:-unset}" >&2
     exit 1
 fi
-PACKAGE_VERSION="$NFTFLOW_VERSION-r$NFTFLOW_RELEASE"
+PACKAGE_VERSION="${package_version}-r${package_release}"
 
 test -d "$SDK"
 test -x "$SDK/staging_dir/host/bin/apk"
@@ -36,7 +36,7 @@ for relative in "${REQUIRED_EXECUTABLES[@]}"; do
 done
 
 # Official SDK archives do not always have the OpenWrt feeds materialized.
-# Prepare the SDK once and retain the feed/build state in the cache.  The
+# Prepare the SDK once and retain the feed/build state in the cache. The
 # sentinel is written only after every preparation step succeeds.
 SECONDS=0
 if [[ ! -f "$SDK_PREPARED" ]]; then
@@ -70,7 +70,7 @@ mkdir -p "$OUT_DIR"
 
 # A prepared SDK cache can retain package artifacts from an earlier build.
 # Remove only NftFlow APKs so a failed or partial rebuild cannot be mistaken for
-# the current package.  A clean SDK may not have created the output directory
+# the current package. A clean SDK may not have created the output directory
 # yet, so there is nothing to remove in that case.
 apk_output_dir="$SDK/bin/packages"
 if [[ -d "$apk_output_dir" ]]; then
@@ -86,11 +86,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Build the package from the normal OpenWrt package Makefile.  This keeps
+# Build the package from the normal OpenWrt package Makefile. This keeps
 # dependency metadata, conffiles, maintainer scripts, and luci.mk behavior in
 # the same path used by an image build and by the release workflow.
 mkdir -p "$PACKAGE_DIR"
-cp "$PROJECT/Makefile" "$PROJECT/version.env" "$PACKAGE_DIR/"
+cp "$PROJECT/Makefile" "$PACKAGE_DIR/"
 cp -a "$PROJECT/root" "$PROJECT/htdocs" "$PACKAGE_DIR/"
 for relative in "${REQUIRED_EXECUTABLES[@]}"; do
     if [[ ! -x "$PACKAGE_DIR/$relative" ]]; then
