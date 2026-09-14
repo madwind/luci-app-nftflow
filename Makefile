@@ -9,12 +9,12 @@ PKG_LICENSE_FILES:=LICENSE-APACHE LICENSE
 
 LUCI_TITLE:=LuCI support for NftFlow
 LUCI_DESCRIPTION:=NftFlow managed runtime, YAML configuration, nftables/routing controls and status UI for OpenWrt 25.12+.
-LUCI_DEPENDS:= \
-	+luci-base \
-	+nftables \
-	+kmod-nft-fib \
-	+kmod-nft-tproxy \
-	+ip
+LUCI_EXTRA_DEPENDS:= \
+	luci-base (>=0), \
+	nftables (>=0), \
+	kmod-nft-fib (>=0), \
+	kmod-nft-tproxy (>=0), \
+	ip (>=0)
 LUCI_PKGARCH:=all
 LUCI_MAINTAINER:=Ivon Wei <madwind.cn@gmail.com>
 LUCI_URL:=https://github.com/madwind/luci-app-nftflow
