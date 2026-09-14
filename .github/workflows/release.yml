@@ -17,17 +17,85 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-release:
-    name: Build release APK
+  release-metadata:
+    name: Resolve release metadata
     permissions:
       contents: read
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
     outputs:
+      publish: ${{ steps.metadata.outputs.publish }}
       version: ${{ steps.metadata.outputs.version }}
       tag: ${{ steps.metadata.outputs.tag }}
       title: ${{ steps.metadata.outputs.title }}
       asset: ${{ steps.metadata.outputs.asset }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve package and release versions
+        id: metadata
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "Releases must run from main" >&2
+            exit 1
+          fi
+
+          read_version() {
+            sed -n 's/^PKG_VERSION[[:space:]]*:=[[:space:]]*//p' | head -n1
+          }
+          read_release() {
+            sed -n 's/^PKG_RELEASE[[:space:]]*:=[[:space:]]*//p' | head -n1
+          }
+
+          package_version="$(read_version < Makefile)"
+          package_release="$(read_release < Makefile)"
+          if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$package_release" =~ ^[0-9]+$ ]]; then
+            echo "Invalid PKG_VERSION or PKG_RELEASE in Makefile: ${package_version:-unset}-r${package_release:-unset}" >&2
+            exit 1
+          fi
+
+          publish=true
+          if [[ "$EVENT_NAME" == "push" && -n "$BEFORE_SHA" && ! "$BEFORE_SHA" =~ ^0+$ ]] && git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+            previous_makefile="$(git show "$BEFORE_SHA:Makefile" 2>/dev/null || true)"
+            if [[ -n "$previous_makefile" ]]; then
+              previous_version="$(read_version <<<"$previous_makefile")"
+              previous_release="$(read_release <<<"$previous_makefile")"
+              if [[ "$package_version" == "$previous_version" && "$package_release" == "$previous_release" ]]; then
+                publish=false
+              fi
+            fi
+          fi
+
+          version="${package_version}-r${package_release}"
+          tag="v${version}"
+
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "title=luci-app-nftflow ${version}" >> "$GITHUB_OUTPUT"
+          echo "asset=dist/luci-app-nftflow-${version}.apk" >> "$GITHUB_OUTPUT"
+
+          if [[ "$publish" == "false" ]]; then
+            echo "PKG_VERSION and PKG_RELEASE are unchanged; skipping release."
+          fi
+
+  build-release:
+    name: Build release APK
+    needs: release-metadata
+    if: needs.release-metadata.outputs.publish == 'true'
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     env:
       OPENWRT_VERSION: "25.12.5"
       OPENWRT_TARGET: x86
@@ -42,31 +110,6 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-
-      - name: Resolve package and release versions
-        id: metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "Releases must run from main" >&2
-            exit 1
-          fi
-
-          package_version="$(sed -n 's/^PKG_VERSION[[:space:]]*:=[[:space:]]*//p' Makefile | head -n1)"
-          package_release="$(sed -n 's/^PKG_RELEASE[[:space:]]*:=[[:space:]]*//p' Makefile | head -n1)"
-          if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$package_release" =~ ^[0-9]+$ ]]; then
-            echo "Invalid PKG_VERSION or PKG_RELEASE in Makefile: ${package_version:-unset}-r${package_release:-unset}" >&2
-            exit 1
-          fi
-          package_version="${package_version}-r${package_release}"
-          expected_tag="v${package_version}"
-
-          echo "version=$package_version" >> "$GITHUB_OUTPUT"
-          echo "tag=$expected_tag" >> "$GITHUB_OUTPUT"
-          echo "title=luci-app-nftflow ${package_version}" >> "$GITHUB_OUTPUT"
-          echo "asset=dist/luci-app-nftflow-${package_version}.apk" >> "$GITHUB_OUTPUT"
 
       - name: Restore prepared OpenWrt SDK
         id: sdk-cache
@@ -157,13 +200,15 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: nftflow-release-apk
-          path: ${{ steps.metadata.outputs.asset }}
+          path: ${{ needs.release-metadata.outputs.asset }}
           if-no-files-found: error
           retention-days: 7
 
   publish-release:
     name: Publish GitHub release
-    needs: build-release
+    needs:
+      - release-metadata
+      - build-release
     permissions:
       contents: write
     runs-on: ubuntu-24.04
@@ -179,9 +224,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ needs.build-release.outputs.tag }}
-          RELEASE_TITLE: ${{ needs.build-release.outputs.title }}
-          RELEASE_ASSET: release-artifact/luci-app-nftflow-${{ needs.build-release.outputs.version }}.apk
+          RELEASE_TAG: ${{ needs.release-metadata.outputs.tag }}
+          RELEASE_TITLE: ${{ needs.release-metadata.outputs.title }}
+          RELEASE_ASSET: release-artifact/luci-app-nftflow-${{ needs.release-metadata.outputs.version }}.apk
         shell: bash
         run: |
           set -euo pipefail
