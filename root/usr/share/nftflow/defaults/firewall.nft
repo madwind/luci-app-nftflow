@@ -22,13 +22,13 @@ table inet nftflow {
     set nftflow_direct4 {
         type ipv4_addr
         flags dynamic
-        timeout 2h
+        timeout 10m
         size 8192
     }
     set nftflow_direct6 {
         type ipv6_addr
         flags dynamic
-        timeout 2h
+        timeout 10m
         size 8192
     }
     chain nftflow_prerouting {
@@ -36,14 +36,15 @@ table inet nftflow {
         policy accept;
         ct direction reply return
         udp dport 53 meta mark set 0x1 tproxy to :12345 accept
-        ct mark & 0x30000000 == 0x20000000 return
+        ct mark & 0x30000000 == 0x20000000 meta nfproto ipv4 update @nftflow_direct4 { ip daddr } return
+        ct mark & 0x30000000 == 0x20000000 meta nfproto ipv6 update @nftflow_direct6 { ip6 daddr } return
         ct mark & 0x30000000 == 0x10000000 meta l4proto { tcp, udp } meta mark set 0x1 tproxy to :12345 accept
         meta mark & 0xfe != 0x0 return
         fib daddr type local return
         ip daddr @nftflow_private4 return
         ip6 daddr @nftflow_private6 return
-        ip daddr @nftflow_direct4 ct mark set ct mark | 0x20000000 return
-        ip6 daddr @nftflow_direct6 ct mark set ct mark | 0x20000000 return
+        ip daddr @nftflow_direct4 update @nftflow_direct4 { ip daddr } ct mark set ct mark | 0x20000000 return
+        ip6 daddr @nftflow_direct6 update @nftflow_direct6 { ip6 daddr } ct mark set ct mark | 0x20000000 return
         udp dport 443 reject
         meta l4proto { tcp, udp } ct mark set ct mark | 0x10000000 meta mark set 0x1 tproxy to :12345 accept
     }
@@ -55,14 +56,15 @@ table inet nftflow {
         meta skgid %gid% return
         ct direction reply return
         udp dport 53 meta mark set 0x1 accept
-        ct mark & 0x30000000 == 0x20000000 return
+        ct mark & 0x30000000 == 0x20000000 meta nfproto ipv4 update @nftflow_direct4 { ip daddr } return
+        ct mark & 0x30000000 == 0x20000000 meta nfproto ipv6 update @nftflow_direct6 { ip6 daddr } return
         ct mark & 0x30000000 == 0x10000000 meta mark set 0x1 accept
         meta mark & 0xff != 0x0 return
         fib daddr type local return
         ip daddr @nftflow_private4 return
         ip6 daddr @nftflow_private6 return
-        ip daddr @nftflow_direct4 ct mark set ct mark | 0x20000000 return
-        ip6 daddr @nftflow_direct6 ct mark set ct mark | 0x20000000 return
+        ip daddr @nftflow_direct4 update @nftflow_direct4 { ip daddr } ct mark set ct mark | 0x20000000 return
+        ip6 daddr @nftflow_direct6 update @nftflow_direct6 { ip6 daddr } ct mark set ct mark | 0x20000000 return
         udp dport 443 reject
         meta l4proto { tcp, udp } ct mark set ct mark | 0x10000000 meta mark set 0x1 accept
     }
