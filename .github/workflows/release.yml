@@ -7,7 +7,7 @@ on:
     branches:
       - main
     paths:
-      - version.env
+      - Makefile
   workflow_dispatch:
 
 permissions: {}
@@ -54,12 +54,13 @@ jobs:
             exit 1
           fi
 
-          source version.env
-          if [[ ! "$NFTFLOW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$NFTFLOW_RELEASE" =~ ^[0-9]+$ ]]; then
-            echo "Invalid NFTFLOW_VERSION or NFTFLOW_RELEASE in version.env: $NFTFLOW_VERSION-r$NFTFLOW_RELEASE" >&2
+          package_version="$(sed -n 's/^PKG_VERSION[[:space:]]*:=[[:space:]]*//p' Makefile | head -n1)"
+          package_release="$(sed -n 's/^PKG_RELEASE[[:space:]]*:=[[:space:]]*//p' Makefile | head -n1)"
+          if [[ ! "$package_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$package_release" =~ ^[0-9]+$ ]]; then
+            echo "Invalid PKG_VERSION or PKG_RELEASE in Makefile: ${package_version:-unset}-r${package_release:-unset}" >&2
             exit 1
           fi
-          package_version="$NFTFLOW_VERSION-r$NFTFLOW_RELEASE"
+          package_version="${package_version}-r${package_release}"
           expected_tag="v${package_version}"
 
           echo "version=$package_version" >> "$GITHUB_OUTPUT"
