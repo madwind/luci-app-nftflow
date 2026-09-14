@@ -1,25 +1,29 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-nftflow
-PKG_VERSION:=$(shell sed -n 's/^NFTFLOW_VERSION=//p' $(CURDIR)/version.env)
-PKG_RELEASE:=$(shell sed -n 's/^NFTFLOW_RELEASE=//p' $(CURDIR)/version.env)
+PKG_VERSION:=1.1.0
+PKG_RELEASE:=2
+
+PKG_LICENSE:=Apache-2.0 MIT
+PKG_LICENSE_FILES:=LICENSE-APACHE LICENSE
 
 LUCI_TITLE:=LuCI support for NftFlow
 LUCI_DESCRIPTION:=NftFlow managed runtime, YAML configuration, nftables/routing controls and status UI for OpenWrt 25.12+.
-LUCI_EXTRA_DEPENDS:= \
-	luci-base (>=0), \
-	nftables (>=0), \
-	kmod-nft-fib (>=0), \
-	kmod-nft-tproxy (>=0), \
-	ip (>=0)
+LUCI_DEPENDS:= \
+	+luci-base \
+	+nftables \
+	+kmod-nft-fib \
+	+kmod-nft-tproxy \
+	+ip
 LUCI_PKGARCH:=all
-LUCI_MAINTAINER:=madwind
+LUCI_MAINTAINER:=Ivon Wei <madwind.cn@gmail.com>
 LUCI_URL:=https://github.com/madwind/luci-app-nftflow
 
-PKG_LICENSE:=MIT
-PKG_LICENSE_FILES:=LICENSE
-
+ifneq ($(wildcard ../../luci.mk),)
+include ../../luci.mk
+else
 include $(TOPDIR)/feeds/luci/luci.mk
+endif
 
 define Package/luci-app-nftflow/conffiles
 /etc/config/nftflow
@@ -30,7 +34,6 @@ endef
 
 define Package/luci-app-nftflow/postinst
 #!/bin/sh
-postinst_root="$${IPKG_INSTROOT}"
 upgrade_running='/tmp/nftflow-upgrade.running'
 
 [ -n "$${IPKG_INSTROOT}" ] || {
