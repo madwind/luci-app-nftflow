@@ -35,11 +35,11 @@ table inet nftflow {
         type filter hook prerouting priority mangle - 1;
         policy accept;
         ct direction reply return
+        meta mark & 0xfe != 0x0 return
         udp dport 53 meta mark set 0x1 tproxy to :12345 accept
         ct mark & 0x30000000 == 0x20000000 meta nfproto ipv4 update @nftflow_direct4 { ip daddr } return
         ct mark & 0x30000000 == 0x20000000 meta nfproto ipv6 update @nftflow_direct6 { ip6 daddr } return
         ct mark & 0x30000000 == 0x10000000 meta l4proto { tcp, udp } meta mark set 0x1 tproxy to :12345 accept
-        meta mark & 0xfe != 0x0 return
         fib daddr type local return
         ip daddr @nftflow_private4 return
         ip6 daddr @nftflow_private6 return
@@ -55,11 +55,11 @@ table inet nftflow {
         meta skgid %gid% meta mark & 0x40000000 != 0x0 update @nftflow_direct6 { ip6 daddr } return
         meta skgid %gid% return
         ct direction reply return
+        meta mark & 0xff != 0x0 return
         udp dport 53 meta mark set 0x1 accept
         ct mark & 0x30000000 == 0x20000000 meta nfproto ipv4 update @nftflow_direct4 { ip daddr } return
         ct mark & 0x30000000 == 0x20000000 meta nfproto ipv6 update @nftflow_direct6 { ip6 daddr } return
         ct mark & 0x30000000 == 0x10000000 meta mark set 0x1 accept
-        meta mark & 0xff != 0x0 return
         fib daddr type local return
         ip daddr @nftflow_private4 return
         ip6 daddr @nftflow_private6 return
