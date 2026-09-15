@@ -22,11 +22,12 @@ function valid_domain(value) {
     return true;
 }
 function valid_ipv4(value) {
-    if (!match(value, /^[0-9]+(?:\.[0-9]+){3}$/)) return false;
+    value = `${value ?? ''}`;
+    if (!value || !match(value, /^[0-9.]+$/)) return false;
     let parts = split(value, '.');
     if (length(parts) != 4) return false;
     for (let part in parts) {
-        if (length(part) > 3 || int(part) < 0 || int(part) > 255) return false;
+        if (!match(part, /^[0-9]+$/) || length(part) > 3 || int(part) < 0 || int(part) > 255) return false;
     }
     return true;
 }
@@ -40,12 +41,19 @@ function address_family(value) {
 }
 function normalize_address(value) {
     value = trim(`${value ?? ''}`);
-    let bracketed = match(value, /^\[([0-9A-Fa-f:.]+)\](?::[0-9]+)?$/);
-    if (bracketed) value = bracketed[1];
+
+    if (substr(value, 0, 1) == '[') {
+        let close = index(value, ']');
+        if (close > 1) value = substr(value, 1, close - 1);
+    }
+
     let hash = index(value, '#');
     if (hash >= 0) value = substr(value, 0, hash);
-    let ipv4_port = match(value, /^([0-9]+(?:\.[0-9]+){3}):[0-9]+$/);
-    if (ipv4_port) value = ipv4_port[1];
+
+    let port_parts = split(value, ':');
+    if (length(port_parts) == 2 && valid_ipv4(port_parts[0]) && match(port_parts[1], /^[0-9]+$/))
+        value = port_parts[0];
+
     return address_family(value) ? value : null;
 }
 function add_address(addresses, seen, value) {
@@ -58,9 +66,9 @@ function parse_nslookup(output) {
     let addresses = [], seen = {}, answer = false;
     for (let source_line in split(output || '', '\n')) {
         let line = trim(source_line);
-        if (match(line, /^Name(?:\s+[0-9]+)?:/)) answer = true;
-        let found = match(line, /^Address(?:\s+[0-9]+)?:\s+(\S+)/);
-        if (found && answer) add_address(addresses, seen, found[1]);
+        if (match(line, /^Name([[:space:]]+[0-9]+)?:/)) answer = true;
+        let found = match(line, /^Address([[:space:]]+[0-9]+)?:[[:space:]]+([^[:space:]]+)/);
+        if (found && answer) add_address(addresses, seen, found[2]);
     }
     return addresses;
 }
@@ -84,6 +92,13 @@ function lan_target() {
     }
     if (!device || !address) return { ok: false, error: 'LAN bridge or IPv4 address is unavailable' };
     return { ok: true, device, address };
+}
+function veth_unavailable(output) {
+    output = `${output ?? ''}`;
+    return index(output, 'Operation not supported') >= 0 ||
+        index(output, 'Unknown device type') >= 0 ||
+        index(output, 'Unknown device') >= 0 ||
+        index(output, 'not supported') >= 0;
 }
 function dns_plain(domain, source) {
     let lan = lan_target();
@@ -121,15 +136,24 @@ function dns_plain(domain, source) {
     }
 
     let addresses = parse_nslookup(result.output);
+    let unavailable = source == 'lan' && !result.ok && veth_unavailable(result.output);
     return {
         ok: result.ok && length(addresses) > 0,
+        unavailable,
         source,
         resolver: lan.address,
         addresses,
-        detail: result.ok && length(addresses) > 0 ? null : (result.output || 'DNS query returned no addresses')
+        detail: result.ok && length(addresses) > 0
+            ? null
+            : (unavailable ? 'LAN simulation requires veth support' : (result.output || 'DNS query returned no addresses'))
     };
 }
+function uclient_available() {
+    return fs.access('/bin/uclient-fetch', 'x') === true;
+}
 function doh_query(domain, record_type, answer_type) {
+    if (!uclient_available()) return { ok: false, unavailable: true, addresses: [], error: 'uclient-fetch is not installed' };
+
     let url = `https://1.1.1.1/dns-query?name=${domain}&type=${record_type}`;
     let result = capture(`/bin/uclient-fetch -q -T 5 -O - --header=${q('accept: application/dns-json')} ${q(url)}`);
     if (!result.ok) return { ok: false, addresses: [], error: result.output || `DoH ${record_type} request failed` };
@@ -157,9 +181,10 @@ function dns_doh(domain) {
     for (let item in aaaa.addresses || []) add_address(addresses, seen, item.address);
     let errors = [];
     if (!a.ok) push(errors, a.error);
-    if (!aaaa.ok) push(errors, aaaa.error);
+    if (!aaaa.ok && aaaa.error != a.error) push(errors, aaaa.error);
     return {
         ok: a.ok && aaaa.ok,
+        unavailable: a.unavailable === true || aaaa.unavailable === true,
         source: 'doh',
         resolver: '1.1.1.1',
         addresses,
@@ -176,6 +201,8 @@ function diagnostic_dns(source, domain) {
 function diagnostic_request(domain) {
     domain = trim(`${domain ?? ''}`);
     if (!valid_domain(domain)) return { ok: false, error: 'invalid domain name' };
+    if (!uclient_available()) return { ok: false, unavailable: true, error: 'uclient-fetch is not installed' };
+
     let url = `https://${domain}/`;
     let result = capture(`/bin/uclient-fetch -q -T 8 -O /dev/null ${q(url)}`);
     return {
