@@ -13,7 +13,10 @@
                     "firewall_action_status",
                     "routing_read",
                     "routing_runtime",
-                    "config_read"
+                    "config_read",
+                    "diagnostic_dns",
+                    "diagnostic_request",
+                    "diagnostic_firewall"
                 ],
                 "luci.nftflow.package": [ "version" ],
                 "luci.nftflow.metrics": [ "traffic" ],
