@@ -36,6 +36,7 @@ var TARGET_PATTERNS = [
 ];
 var ROUTE_RE = /\[([^\[\]]+?)\s*->\s*([^\[\]]+?)\]/g;
 var REQUEST_LOG_GRACE_MS = 1500;
+var DOH_SAMPLE_COUNT = 5;
 
 function delay(ms) {
     return new Promise(function(resolve) { window.setTimeout(resolve, ms); });
@@ -172,10 +173,11 @@ function firewallNodes(result) {
     });
 }
 
-function lookupFirewall(addresses) {
-    var results = Object.create(null);
+function lookupFirewall(addresses, results) {
+    results = results || Object.create(null);
     var chain = Promise.resolve();
     addresses.forEach(function(address) {
+        if (Object.prototype.hasOwnProperty.call(results, address)) return;
         chain = chain.then(function() {
             return callDiagnosticFirewall(address).then(function(result) {
                 results[address] = result;
@@ -339,42 +341,14 @@ return view.extend({
             });
         }
 
-        function runDns(source, domain, card, resolver) {
+        function runDns(source, domain, card) {
             nftflowUi.setState(card.state, 'notice', _('Running...'));
             card.body.replaceChildren();
-            return callDiagnosticDns(source, domain, resolver || '').then(function(result) {
-                if (result && result.ok === true) {
-                    if (source === 'doh') {
-                        var requested = Number(result.samples || 0);
-                        var aDone = Number(result.successful_a_samples || 0);
-                        var aaaaDone = Number(result.successful_aaaa_samples || 0);
-                        var families = [];
-                        var samples = [];
-                        var complete = requested > 0;
-
-                        if (result.ipv4_enabled === true) {
-                            families.push('IPv4');
-                            samples.push('A %d/%d'.format(aDone, requested));
-                            complete = complete && aDone === requested;
-                        }
-                        if (result.ipv6_enabled === true) {
-                            families.push('IPv6');
-                            samples.push('AAAA %d/%d'.format(aaaaDone, requested));
-                            complete = complete && aaaaDone === requested;
-                        }
-
-                        var status = _('Resolver: %s').format(result.resolver || resolver);
-                        if (families.length)
-                            status += ' · ' + _('System: %s').format(families.join(' + '));
-                        if (samples.length)
-                            status += ' · ' + samples.join(' · ');
-                        nftflowUi.setState(card.state, complete ? 'ok' : 'warn', status);
-                    } else {
-                        nftflowUi.setState(card.state, 'ok', result.resolver ? _('Resolver: %s').format(result.resolver) : _('Done'));
-                    }
-                } else {
+            return callDiagnosticDns(source, domain, '').then(function(result) {
+                if (result && result.ok === true)
+                    nftflowUi.setState(card.state, 'ok', result.resolver ? _('Resolver: %s').format(result.resolver) : _('Done'));
+                else
                     nftflowUi.setState(card.state, 'warn', result && (result.error || result.detail) ? (result.error || result.detail) : _('Query failed'));
-                }
                 return result || { ok: false, addresses: [] };
             }).catch(function(error) {
                 nftflowUi.setState(card.state, 'error', nftflowUi.errorMessage(error));
@@ -384,6 +358,113 @@ return view.extend({
 
         function renderDns(result, card, firewall) {
             card.body.replaceChildren(addressTable(result, firewall));
+        }
+
+        function refreshDns(result, card, firewall) {
+            return lookupFirewall(uniqueAddresses([ result ]), firewall).then(function() {
+                renderDns(result, card, firewall);
+                return result;
+            });
+        }
+
+        function updateDohState(result, completed, card, resolver) {
+            var families = [];
+            var samples = [];
+            var complete = completed >= DOH_SAMPLE_COUNT;
+            var aDone = Number(result.successful_a_samples || 0);
+            var aaaaDone = Number(result.successful_aaaa_samples || 0);
+
+            if (result.ipv4_enabled === true) {
+                families.push('IPv4');
+                samples.push('A %d/%d'.format(aDone, DOH_SAMPLE_COUNT));
+                complete = complete && aDone === DOH_SAMPLE_COUNT;
+            }
+            if (result.ipv6_enabled === true) {
+                families.push('IPv6');
+                samples.push('AAAA %d/%d'.format(aaaaDone, DOH_SAMPLE_COUNT));
+                complete = complete && aaaaDone === DOH_SAMPLE_COUNT;
+            }
+
+            if (!families.length) {
+                nftflowUi.setState(card.state, 'warn', result.detail || result.error || _('No usable system IP family.'));
+                return;
+            }
+
+            var status = _('Resolver: %s').format(result.resolver || resolver);
+            status += ' · ' + _('System: %s').format(families.join(' + '));
+            status += ' · ' + samples.join(' · ');
+            if (completed < DOH_SAMPLE_COUNT)
+                nftflowUi.setState(card.state, 'notice', status);
+            else
+                nftflowUi.setState(card.state, complete ? 'ok' : 'warn', status);
+        }
+
+        function runDoh(domain, card, resolver, firewall) {
+            nftflowUi.setState(card.state, 'notice', _('Running...'));
+            card.body.replaceChildren();
+
+            var result = {
+                ok: false,
+                source: 'doh',
+                resolver: resolver,
+                ipv4_enabled: false,
+                ipv6_enabled: false,
+                successful_a_samples: 0,
+                successful_aaaa_samples: 0,
+                addresses: [],
+                detail: null
+            };
+            var seen = Object.create(null);
+            var errors = Object.create(null);
+            var completed = 0;
+            var stopped = false;
+            var chain = Promise.resolve();
+
+            function mergeSample(sample) {
+                if (!sample) return;
+                result.resolver = sample.resolver || result.resolver;
+                if (sample.ipv4_enabled === true) result.ipv4_enabled = true;
+                if (sample.ipv6_enabled === true) result.ipv6_enabled = true;
+                result.successful_a_samples += Number(sample.successful_a_samples || 0);
+                result.successful_aaaa_samples += Number(sample.successful_aaaa_samples || 0);
+
+                (Array.isArray(sample.addresses) ? sample.addresses : []).forEach(function(item) {
+                    var address = item && item.address ? String(item.address) : '';
+                    if (!address || seen[address]) return;
+                    seen[address] = true;
+                    result.addresses.push({ address: address, family: item.family });
+                });
+
+                if (sample.detail) errors[String(sample.detail)] = true;
+                if (sample.error) errors[String(sample.error)] = true;
+                var messages = Object.keys(errors);
+                result.detail = messages.length ? messages.join('; ') : null;
+                result.ok = result.successful_a_samples > 0 || result.successful_aaaa_samples > 0;
+
+                if (sample.unavailable === true || (sample.ipv4_enabled === false && sample.ipv6_enabled === false))
+                    stopped = true;
+            }
+
+            for (var i = 0; i < DOH_SAMPLE_COUNT; i++) {
+                chain = chain.then(function() {
+                    if (stopped) return null;
+                    return callDiagnosticDns('doh', domain, resolver).catch(function(error) {
+                        return { ok: false, addresses: [], error: nftflowUi.errorMessage(error) };
+                    });
+                }).then(function(sample) {
+                    if (!sample) return;
+                    completed++;
+                    mergeSample(sample);
+                    return refreshDns(result, card, firewall).then(function() {
+                        updateDohState(result, completed, card, resolver);
+                    });
+                });
+            }
+
+            return chain.then(function() {
+                updateDohState(result, completed, card, resolver);
+                return result;
+            });
         }
 
         function renderRequest(trace, firewall) {
@@ -420,13 +501,18 @@ return view.extend({
 
                 activeCapture = { lines: [], requestStart: 0 };
                 var dnsResults = [];
+                var progressiveFirewall = Object.create(null);
 
                 return runDns('lan', domain, lanCard).then(function(result) {
                     dnsResults.push(result);
+                    return refreshDns(result, lanCard, progressiveFirewall);
+                }).then(function() {
                     return runDns('router', domain, routerCard);
                 }).then(function(result) {
                     dnsResults.push(result);
-                    return runDns('doh', domain, dohCard, dohResolver.value);
+                    return refreshDns(result, routerCard, progressiveFirewall);
+                }).then(function() {
+                    return runDoh(domain, dohCard, dohResolver.value, progressiveFirewall);
                 }).then(function(result) {
                     dnsResults.push(result);
                     activeCapture.requestStart = activeCapture.lines.length;

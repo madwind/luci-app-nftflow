@@ -6,7 +6,6 @@
 import * as fs from 'fs';
 
 let ubus = require('ubus').connect();
-let DOH_SAMPLE_COUNT = 5;
 
 function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\\''`)}'`; }
 function capture(command) {
@@ -208,7 +207,6 @@ function dns_doh(domain, resolver) {
         ok: false,
         source: 'doh',
         resolver,
-        samples: DOH_SAMPLE_COUNT,
         ipv4_enabled: false,
         ipv6_enabled: false,
         addresses: [],
@@ -219,7 +217,6 @@ function dns_doh(domain, resolver) {
         unavailable: true,
         source: 'doh',
         resolver,
-        samples: DOH_SAMPLE_COUNT,
         ipv4_enabled: families.ipv4,
         ipv6_enabled: families.ipv6,
         addresses: [],
@@ -229,25 +226,23 @@ function dns_doh(domain, resolver) {
     let addresses = [], seen = {}, errors = {};
     let successful_a_samples = 0, successful_aaaa_samples = 0;
 
-    for (let i = 0; i < DOH_SAMPLE_COUNT; i++) {
-        if (families.ipv4) {
-            let a = doh_query(domain, resolver, 'A', 1);
-            if (a.ok) {
-                successful_a_samples++;
-                merge_addresses(addresses, seen, a.addresses);
-            } else if (a.error) {
-                errors[a.error] = true;
-            }
+    if (families.ipv4) {
+        let a = doh_query(domain, resolver, 'A', 1);
+        if (a.ok) {
+            successful_a_samples = 1;
+            merge_addresses(addresses, seen, a.addresses);
+        } else if (a.error) {
+            errors[a.error] = true;
         }
+    }
 
-        if (families.ipv6) {
-            let aaaa = doh_query(domain, resolver, 'AAAA', 28);
-            if (aaaa.ok) {
-                successful_aaaa_samples++;
-                merge_addresses(addresses, seen, aaaa.addresses);
-            } else if (aaaa.error) {
-                errors[aaaa.error] = true;
-            }
+    if (families.ipv6) {
+        let aaaa = doh_query(domain, resolver, 'AAAA', 28);
+        if (aaaa.ok) {
+            successful_aaaa_samples = 1;
+            merge_addresses(addresses, seen, aaaa.addresses);
+        } else if (aaaa.error) {
+            errors[aaaa.error] = true;
         }
     }
 
@@ -256,7 +251,6 @@ function dns_doh(domain, resolver) {
         ok: successful_a_samples > 0 || successful_aaaa_samples > 0,
         source: 'doh',
         resolver,
-        samples: DOH_SAMPLE_COUNT,
         ipv4_enabled: families.ipv4,
         ipv6_enabled: families.ipv6,
         successful_a_samples,
