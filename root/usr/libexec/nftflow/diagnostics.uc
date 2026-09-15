@@ -207,29 +207,35 @@ function dns_doh(domain, resolver, samples) {
     };
 
     let sample_count = doh_sample_count(samples);
-    let addresses = [], seen = {}, errors = {}, successful_samples = 0;
+    let addresses = [], seen = {}, errors = {};
+    let successful_a_samples = 0, successful_aaaa_samples = 0;
 
     for (let i = 0; i < sample_count; i++) {
-        let result = doh_query(domain, resolver, 'A', 1);
-        if (result.ok) {
-            successful_samples++;
-            merge_addresses(addresses, seen, result.addresses);
-        } else if (result.error) {
-            errors[result.error] = true;
+        let a = doh_query(domain, resolver, 'A', 1);
+        if (a.ok) {
+            successful_a_samples++;
+            merge_addresses(addresses, seen, a.addresses);
+        } else if (a.error) {
+            errors[a.error] = true;
+        }
+
+        let aaaa = doh_query(domain, resolver, 'AAAA', 28);
+        if (aaaa.ok) {
+            successful_aaaa_samples++;
+            merge_addresses(addresses, seen, aaaa.addresses);
+        } else if (aaaa.error) {
+            errors[aaaa.error] = true;
         }
     }
 
-    let aaaa = doh_query(domain, resolver, 'AAAA', 28);
-    if (aaaa.ok) merge_addresses(addresses, seen, aaaa.addresses);
-    else if (aaaa.error) errors[aaaa.error] = true;
-
     let error_list = keys(errors);
     return {
-        ok: successful_samples > 0,
+        ok: successful_a_samples > 0 || successful_aaaa_samples > 0,
         source: 'doh',
         resolver,
         samples: sample_count,
-        successful_samples,
+        successful_a_samples,
+        successful_aaaa_samples,
         addresses,
         detail: length(error_list) ? join('; ', error_list) : null
     };
