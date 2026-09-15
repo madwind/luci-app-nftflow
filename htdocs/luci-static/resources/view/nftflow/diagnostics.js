@@ -315,9 +315,63 @@ return view.extend({
         var activeCapture = null;
         var streamReady = false;
 
+        function requestLineRelevant(request, line) {
+            if (line.toLowerCase().indexOf(request.domain.toLowerCase()) >= 0)
+                return true;
+
+            var addresses = request.seedAddresses.slice();
+            if (request.trace && Array.isArray(request.trace.targets))
+                addresses = addresses.concat(request.trace.targets);
+
+            return addresses.some(function(address) { return line.indexOf(address) >= 0; });
+        }
+
+        function refreshRequestCapture(capture) {
+            if (!capture || !capture.request) return Promise.resolve();
+
+            var request = capture.request;
+            request.dirty = true;
+            if (request.refreshing)
+                return request.refreshPromise || Promise.resolve();
+
+            request.refreshing = true;
+
+            function run() {
+                request.dirty = false;
+                var requestLines = capture.lines.slice(request.start);
+                var trace = relatedTrace(requestLines, request.domain, request.seedAddresses);
+                request.trace = trace;
+                traceOutput.value = trace.lines.length
+                    ? trace.lines.join('\n')
+                    : _('Waiting for related Xray runtime log...');
+
+                if (!trace.targets.length) {
+                    requestSummary.replaceChildren();
+                    return Promise.resolve();
+                }
+
+                return lookupFirewall(trace.targets, request.firewall).then(function() {
+                    renderRequest(trace, request.firewall, request.dnsSources);
+                });
+            }
+
+            request.refreshPromise = run().then(function repeat() {
+                if (!request.dirty) return;
+                return run().then(repeat);
+            }).finally(function() {
+                request.refreshing = false;
+                request.refreshPromise = null;
+            });
+
+            return request.refreshPromise;
+        }
+
         function appendEntry(entry) {
             if (!isRuntimeEntry(entry) || !activeCapture) return;
-            activeCapture.lines.push(formatLogEntry(entry));
+            var line = formatLogEntry(entry);
+            activeCapture.lines.push(line);
+            if (activeCapture.request && requestLineRelevant(activeCapture.request, line))
+                refreshRequestCapture(activeCapture);
         }
 
         function consumeFrame(frame) {
@@ -488,7 +542,7 @@ return view.extend({
             return startLogStream().then(function(ready) {
                 if (!ready) throw new Error(_('Runtime log subscription is unavailable.'));
 
-                activeCapture = { lines: [], requestStart: 0 };
+                activeCapture = { lines: [], request: null };
                 var dnsResults = [];
                 var lanResult = null;
                 var routerResult = null;
@@ -510,23 +564,6 @@ return view.extend({
                 }).then(function(results) {
                     dohResults = results;
                     results.forEach(function(result) { dnsResults.push(result); });
-                    activeCapture.requestStart = activeCapture.lines.length;
-                    nftflowUi.setState(requestState, 'notice', _('Requesting https://%s/ ...').format(domain));
-                    return callDiagnosticRequest(domain).catch(function(error) {
-                        return { ok: false, detail: nftflowUi.errorMessage(error) };
-                    });
-                }).then(function(requestResult) {
-                    nftflowUi.setState(requestState, requestResult && requestResult.ok === true ? 'ok' : 'warn',
-                        requestResult && requestResult.ok === true ? _('Page request completed') : ((requestResult && requestResult.detail) || _('Page request failed')));
-                    return delay(REQUEST_LOG_GRACE_MS).then(function() { return requestResult; });
-                }).then(function() {
-                    var requestLines = activeCapture.lines.slice(activeCapture.requestStart);
-                    var dnsAddresses = uniqueAddresses(dnsResults);
-                    var trace = relatedTrace(requestLines, domain, dnsAddresses);
-                    var allAddresses = dnsAddresses.slice();
-                    trace.targets.forEach(function(address) {
-                        if (allAddresses.indexOf(address) < 0) allAddresses.push(address);
-                    });
 
                     var dnsSources = [
                         { label: _('LAN DNS'), result: lanResult },
@@ -536,13 +573,43 @@ return view.extend({
                         dnsSources.push({ label: entry.name, result: dohResults[index] });
                     });
 
-                    return lookupFirewall(allAddresses).then(function(firewall) {
+                    activeCapture.request = {
+                        start: activeCapture.lines.length,
+                        domain: domain,
+                        seedAddresses: uniqueAddresses(dnsResults),
+                        dnsSources: dnsSources,
+                        firewall: progressiveFirewall,
+                        trace: { lines: [], targets: [] },
+                        dirty: false,
+                        refreshing: false,
+                        refreshPromise: null
+                    };
+                    traceOutput.value = _('Waiting for related Xray runtime log...');
+                    nftflowUi.setState(requestState, 'notice', _('Requesting https://%s/ ...').format(domain));
+                    return callDiagnosticRequest(domain).catch(function(error) {
+                        return { ok: false, detail: nftflowUi.errorMessage(error) };
+                    });
+                }).then(function(requestResult) {
+                    nftflowUi.setState(requestState, requestResult && requestResult.ok === true ? 'ok' : 'warn',
+                        requestResult && requestResult.ok === true ? _('Page request completed') : ((requestResult && requestResult.detail) || _('Page request failed')));
+                    return delay(REQUEST_LOG_GRACE_MS).then(function() {
+                        return refreshRequestCapture(activeCapture);
+                    });
+                }).then(function() {
+                    var request = activeCapture.request;
+                    var trace = request.trace || relatedTrace(activeCapture.lines.slice(request.start), domain, request.seedAddresses);
+
+                    trace.targets.forEach(function(address) {
+                        delete request.firewall[address];
+                    });
+
+                    return lookupFirewall(trace.targets, request.firewall).then(function(firewall) {
                         renderDns(lanResult, lanCard, firewall);
                         renderDns(routerResult, routerCard, firewall);
                         dohCard.entries.forEach(function(entry, index) {
                             renderDns(dohResults[index], entry, firewall);
                         });
-                        renderRequest(trace, firewall, dnsSources);
+                        renderRequest(trace, firewall, request.dnsSources);
 
                         traceOutput.value = trace.lines.length ? trace.lines.join('\n') : _('No related Xray runtime log lines were captured.');
                         nftflowUi.setState(overallState, 'ok', _('Diagnostics complete'));
