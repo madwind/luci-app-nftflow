@@ -29,9 +29,12 @@ var callDiagnosticFirewall = rpc.declare({
 });
 
 var LOG_SOURCE = /^(?:nftflow|nftflowctl)(?:\[\d+\])?:\s*/i;
-var IPV4_RE = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
-var BRACKET_IPV6_RE = /\[([0-9A-Fa-f:]{2,})\]/g;
-var PLAIN_IPV6_RE = /\b(?:[0-9A-Fa-f]{1,4}:){2,}[0-9A-Fa-f:]{1,4}\b/g;
+var TARGET_PATTERNS = [
+    /\b(?:accepted|rejected)\s+(?:tcp|udp):(\[[0-9A-Fa-f:.]+\]|(?:\d{1,3}\.){3}\d{1,3})(?::\d+)?/ig,
+    /\b(?:dialing|dial|connecting to|opening connection to)\s+(?:tcp|udp):(\[[0-9A-Fa-f:.]+\]|(?:\d{1,3}\.){3}\d{1,3})(?::\d+)?/ig,
+    /\b(?:target|destination|remote)\s*[=:]\s*(\[[0-9A-Fa-f:.]+\]|(?:\d{1,3}\.){3}\d{1,3})(?::\d+)?/ig
+];
+var ROUTE_RE = /\[([^\[\]]+?)\s*->\s*([^\[\]]+?)\]/g;
 var LOG_QUIET_MS = 600;
 var LOG_WAIT_MAX_MS = 3000;
 
@@ -53,22 +56,34 @@ function validDomain(value) {
     return /^[A-Za-z0-9_.-]+$/.test(value) && value.length <= 253 && value.charAt(0) !== '.' && value.charAt(value.length - 1) !== '.';
 }
 
-function extractAddresses(line) {
+function normalizeEndpoint(value) {
+    value = String(value || '');
+    if (value.charAt(0) === '[' && value.charAt(value.length - 1) === ']')
+        value = value.slice(1, -1);
+    return value;
+}
+
+function extractTargetAddresses(line) {
+    var found = Object.create(null);
+    TARGET_PATTERNS.forEach(function(pattern) {
+        var match;
+        pattern.lastIndex = 0;
+        while ((match = pattern.exec(line)) !== null)
+            found[normalizeEndpoint(match[1])] = true;
+    });
+    return Object.keys(found);
+}
+
+function extractRoutes(line) {
     var found = Object.create(null);
     var match;
-
-    IPV4_RE.lastIndex = 0;
-    while ((match = IPV4_RE.exec(line)) !== null)
-        found[match[0]] = true;
-
-    BRACKET_IPV6_RE.lastIndex = 0;
-    while ((match = BRACKET_IPV6_RE.exec(line)) !== null)
-        found[match[1]] = true;
-
-    PLAIN_IPV6_RE.lastIndex = 0;
-    while ((match = PLAIN_IPV6_RE.exec(line)) !== null)
-        found[match[0]] = true;
-
+    ROUTE_RE.lastIndex = 0;
+    while ((match = ROUTE_RE.exec(line)) !== null) {
+        var inbound = match[1].trim();
+        var outbound = match[2].trim();
+        if (inbound && outbound)
+            found['%s -> %s'.format(inbound, outbound)] = true;
+    }
     return Object.keys(found);
 }
 
@@ -89,6 +104,7 @@ function uniqueAddresses(results) {
 function relatedTrace(lines, domain, seedAddresses) {
     var known = Object.create(null);
     var selected = Object.create(null);
+    var targets = Object.create(null);
     var normalizedDomain = domain.toLowerCase();
     var changed = true;
 
@@ -98,21 +114,23 @@ function relatedTrace(lines, domain, seedAddresses) {
         changed = false;
         lines.forEach(function(line, index) {
             if (selected[index]) return;
+
             var lower = line.toLowerCase();
-            var match = lower.indexOf(normalizedDomain) >= 0;
-            if (!match) {
+            var related = lower.indexOf(normalizedDomain) >= 0;
+            if (!related) {
                 Object.keys(known).some(function(address) {
                     if (line.indexOf(address) >= 0) {
-                        match = true;
+                        related = true;
                         return true;
                     }
                     return false;
                 });
             }
-            if (!match) return;
+            if (!related) return;
 
             selected[index] = true;
-            extractAddresses(line).forEach(function(address) {
+            extractTargetAddresses(line).forEach(function(address) {
+                targets[address] = true;
                 if (!known[address]) {
                     known[address] = true;
                     changed = true;
@@ -123,19 +141,36 @@ function relatedTrace(lines, domain, seedAddresses) {
 
     return {
         lines: lines.filter(function(line, index) { return !!selected[index]; }),
-        addresses: Object.keys(known)
+        targets: Object.keys(targets)
     };
 }
 
-function firewallLabel(result) {
+function routesForTarget(lines, address) {
+    var found = Object.create(null);
+    lines.forEach(function(line) {
+        if (line.indexOf(address) < 0) return;
+        extractRoutes(line).forEach(function(route) { found[route] = true; });
+    });
+    if (!Object.keys(found).length)
+        lines.forEach(function(line) { extractRoutes(line).forEach(function(route) { found[route] = true; }); });
+    return Object.keys(found);
+}
+
+function firewallNodes(result) {
     if (!result || result.ok !== true)
-        return _('Firewall lookup failed');
+        return [ E('span', { 'class': 'error' }, _('Lookup failed')) ];
     if (!Array.isArray(result.matches) || !result.matches.length)
-        return _('No set match');
+        return [ E('span', { 'style': 'opacity:.7;' }, _('No set match')) ];
+
     return result.matches.map(function(match) {
-        var name = '%s %s @%s'.format(match.family || '', match.table || '', match.set || '');
-        return match.expires ? '%s (%s)'.format(name, match.expires) : name;
-    }).join(', ');
+        var detail = [ match.family || '', match.table || '' ].filter(Boolean).join(' ');
+        if (match.expires)
+            detail += (detail ? ' · ' : '') + match.expires;
+        return E('div', { 'style': 'margin:.1rem 0;' }, [
+            E('code', {}, '@' + (match.set || '')),
+            detail ? E('span', { 'style': 'margin-left:.4rem; opacity:.7; font-size:90%;' }, detail) : ''
+        ]);
+    });
 }
 
 function lookupFirewall(addresses) {
@@ -153,28 +188,40 @@ function lookupFirewall(addresses) {
     return chain.then(function() { return results; });
 }
 
-function addressRows(result, firewall) {
-    var rows = [];
+function table(headers, rows) {
+    return E('div', { 'style': 'overflow-x:auto;' }, [
+        E('table', { 'class': 'table', 'style': 'width:100%; margin-top:.5rem;' }, [
+            E('thead', {}, [
+                E('tr', {}, headers.map(function(header) {
+                    return E('th', { 'style': 'text-align:left;' }, header);
+                }))
+            ]),
+            E('tbody', {}, rows)
+        ])
+    ]);
+}
+
+function addressTable(result, firewall) {
     var addresses = result && Array.isArray(result.addresses) ? result.addresses : [];
     if (!addresses.length)
-        return [ E('div', { 'class': 'notice' }, result && result.detail ? result.detail : _('No address returned.')) ];
+        return E('div', { 'class': 'notice', 'style': 'margin-top:.5rem;' }, result && result.detail ? result.detail : _('No address returned.'));
 
-    addresses.forEach(function(item) {
+    return table([ _('Type'), _('Address'), _('Firewall set') ], addresses.map(function(item) {
         var address = item.address;
-        rows.push(E('div', { 'style': 'margin: .2rem 0;' }, [
-            E('code', {}, address),
-            E('div', { 'style': 'font-size: 90%; opacity: .8;' }, firewallLabel(firewall[address]))
-        ]));
-    });
-    return rows;
+        return E('tr', {}, [
+            E('td', {}, item.family === 6 ? 'AAAA' : 'A'),
+            E('td', {}, E('code', {}, address)),
+            E('td', {}, firewallNodes(firewall[address]))
+        ]);
+    }));
 }
 
 function dnsCard(title) {
     var state = E('span', {}, _('Pending'));
-    var body = E('div', { 'style': 'margin-top: .5rem;' });
+    var body = E('div');
     return {
-        root: E('div', { 'class': 'cbi-section', 'style': 'flex: 1 1 18rem; min-width: 0;' }, [
-            E('h4', { 'style': 'margin-top: 0;' }, title),
+        root: E('div', { 'class': 'cbi-section', 'style': 'flex:1 1 22rem; min-width:0;' }, [
+            E('h4', { 'style': 'margin-top:0;' }, title),
             state,
             body
         ]),
@@ -195,7 +242,7 @@ return view.extend({
             'placeholder': 'example.com',
             'autocomplete': 'off',
             'spellcheck': 'false',
-            'style': 'min-width: 20rem; flex: 1 1 20rem;'
+            'style': 'min-width:20rem; flex:1 1 20rem;'
         });
         var checkButton = E('button', { 'class': 'btn cbi-button cbi-button-action', 'type': 'button' }, _('Check'));
         var overallState = E('span', { 'aria-live': 'polite' });
@@ -206,7 +253,7 @@ return view.extend({
         var dohCard = dnsCard(_('DoH 1.1.1.1'));
 
         var requestState = E('span');
-        var requestAddresses = E('div', { 'style': 'margin-top: .5rem;' });
+        var requestSummary = E('div');
         var traceOutput = E('textarea', {
             'class': 'cbi-input-text',
             'style': 'display:block; width:100%; min-height:18em; box-sizing:border-box; white-space:pre-wrap; overflow-wrap:anywhere;',
@@ -311,7 +358,23 @@ return view.extend({
         }
 
         function renderDns(result, card, firewall) {
-            card.body.replaceChildren.apply(card.body, addressRows(result, firewall));
+            card.body.replaceChildren(addressTable(result, firewall));
+        }
+
+        function renderRequest(trace, firewall) {
+            if (!trace.targets.length) {
+                requestSummary.replaceChildren(E('div', { 'class': 'notice', 'style': 'margin-top:.5rem;' }, _('No remote target IP was found in the related Xray runtime log.')));
+                return;
+            }
+
+            requestSummary.replaceChildren(table([ _('Target IP'), _('Firewall set'), _('Xray route') ], trace.targets.map(function(address) {
+                var routes = routesForTarget(trace.lines, address);
+                return E('tr', {}, [
+                    E('td', {}, E('code', {}, address)),
+                    E('td', {}, firewallNodes(firewall[address])),
+                    E('td', {}, routes.length ? routes.map(function(route) { return E('div', {}, E('code', {}, route)); }) : '—')
+                ]);
+            })));
         }
 
         function runCheck() {
@@ -323,7 +386,7 @@ return view.extend({
 
             checkButton.disabled = true;
             nftflowUi.setState(overallState, 'notice', _('Running diagnostics...'));
-            requestAddresses.replaceChildren();
+            requestSummary.replaceChildren();
             traceOutput.value = '';
             nftflowUi.setState(requestState, 'notice', _('Pending'));
 
@@ -351,12 +414,12 @@ return view.extend({
                     nftflowUi.setState(requestState, requestResult && requestResult.ok === true ? 'ok' : 'warn',
                         requestResult && requestResult.ok === true ? _('Page request completed') : ((requestResult && requestResult.detail) || _('Page request failed')));
                     return waitForQuiet(activeCapture).then(function() { return requestResult; });
-                }).then(function(requestResult) {
+                }).then(function() {
                     var requestLines = activeCapture.lines.slice(activeCapture.requestStart);
                     var dnsAddresses = uniqueAddresses(dnsResults);
                     var trace = relatedTrace(requestLines, domain, dnsAddresses);
                     var allAddresses = dnsAddresses.slice();
-                    trace.addresses.forEach(function(address) {
+                    trace.targets.forEach(function(address) {
                         if (allAddresses.indexOf(address) < 0) allAddresses.push(address);
                     });
 
@@ -364,19 +427,7 @@ return view.extend({
                         renderDns(dnsResults[0], lanCard, firewall);
                         renderDns(dnsResults[1], routerCard, firewall);
                         renderDns(dnsResults[2], dohCard, firewall);
-
-                        var xrayAddresses = trace.addresses.filter(function(address) {
-                            return requestLines.some(function(line) { return line.indexOf(address) >= 0; });
-                        });
-                        if (!xrayAddresses.length)
-                            requestAddresses.appendChild(E('div', { 'class': 'notice' }, _('No target IP was found in the related runtime log.')));
-                        else
-                            xrayAddresses.forEach(function(address) {
-                                requestAddresses.appendChild(E('div', { 'style': 'margin: .25rem 0;' }, [
-                                    E('code', {}, address),
-                                    E('div', { 'style': 'font-size:90%; opacity:.8;' }, firewallLabel(firewall[address]))
-                                ]));
-                            });
+                        renderRequest(trace, firewall);
 
                         traceOutput.value = trace.lines.length ? trace.lines.join('\n') : _('No related Xray runtime log lines were captured.');
                         nftflowUi.setState(overallState, 'ok', _('Diagnostics complete'));
@@ -418,7 +469,7 @@ return view.extend({
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Actual request')),
                 requestState,
-                requestAddresses
+                requestSummary
             ]),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', { 'class': 'cbi-section-title' }, _('Xray request trace')),
