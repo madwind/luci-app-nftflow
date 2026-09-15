@@ -66,9 +66,11 @@ function parse_nslookup(output) {
     let addresses = [], seen = {}, answer = false;
     for (let source_line in split(output || '', '\n')) {
         let line = trim(source_line);
-        if (match(line, /^Name([[:space:]]+[0-9]+)?:/)) answer = true;
-        let found = match(line, /^Address([[:space:]]+[0-9]+)?:[[:space:]]+([^[:space:]]+)/);
-        if (found && answer) add_address(addresses, seen, found[2]);
+        if (substr(line, 0, 5) == 'Name:' || match(line, /^Name[ \t]+[0-9]+:/)) answer = true;
+
+        let found = match(line, /^Address:[ \t]+([^ \t]+)/);
+        if (!found) found = match(line, /^Address[ \t]+[0-9]+:[ \t]+([^ \t]+)/);
+        if (found && answer) add_address(addresses, seen, found[1]);
     }
     return addresses;
 }
