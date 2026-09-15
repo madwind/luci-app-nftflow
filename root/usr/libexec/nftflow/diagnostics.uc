@@ -6,6 +6,7 @@
 import * as fs from 'fs';
 
 let ubus = require('ubus').connect();
+let DOH_SAMPLE_COUNT = 5;
 
 function q(value) { return `'${replace(`${value ?? ''}`, /'/g, `'\\''`)}'`; }
 function capture(command) {
@@ -166,8 +167,13 @@ function doh_endpoint(resolver, domain, record_type) {
         return `https://223.5.5.5/resolve?name=${domain}&type=${record_type}`;
     return null;
 }
-function doh_sample_count(value) {
-    return int(value || 0) == 10 ? 10 : 5;
+function system_families() {
+    let ipv4 = capture('ip -4 route show default');
+    let ipv6 = capture('ip -6 route show default');
+    return {
+        ipv4: ipv4.ok && !!trim(ipv4.output || ''),
+        ipv6: ipv6.ok && !!trim(ipv6.output || '')
+    };
 }
 function doh_query(domain, resolver, record_type, answer_type) {
     if (!uclient_available()) return { ok: false, unavailable: true, addresses: [], error: 'uclient-fetch is not installed' };
@@ -193,38 +199,55 @@ function doh_query(domain, resolver, record_type, answer_type) {
     }
     return { ok: true, addresses };
 }
-function dns_doh(domain, resolver, samples) {
+function dns_doh(domain, resolver) {
     resolver = trim(`${resolver ?? ''}`) || '1.1.1.1';
     if (!doh_endpoint(resolver, domain, 'A')) return { ok: false, error: 'unsupported DoH resolver' };
+
+    let families = system_families();
+    if (!families.ipv4 && !families.ipv6) return {
+        ok: false,
+        source: 'doh',
+        resolver,
+        samples: DOH_SAMPLE_COUNT,
+        ipv4_enabled: false,
+        ipv6_enabled: false,
+        addresses: [],
+        detail: 'no IPv4 or IPv6 default route detected'
+    };
     if (!uclient_available()) return {
         ok: false,
         unavailable: true,
         source: 'doh',
         resolver,
-        samples: doh_sample_count(samples),
+        samples: DOH_SAMPLE_COUNT,
+        ipv4_enabled: families.ipv4,
+        ipv6_enabled: families.ipv6,
         addresses: [],
         detail: 'uclient-fetch is not installed'
     };
 
-    let sample_count = doh_sample_count(samples);
     let addresses = [], seen = {}, errors = {};
     let successful_a_samples = 0, successful_aaaa_samples = 0;
 
-    for (let i = 0; i < sample_count; i++) {
-        let a = doh_query(domain, resolver, 'A', 1);
-        if (a.ok) {
-            successful_a_samples++;
-            merge_addresses(addresses, seen, a.addresses);
-        } else if (a.error) {
-            errors[a.error] = true;
+    for (let i = 0; i < DOH_SAMPLE_COUNT; i++) {
+        if (families.ipv4) {
+            let a = doh_query(domain, resolver, 'A', 1);
+            if (a.ok) {
+                successful_a_samples++;
+                merge_addresses(addresses, seen, a.addresses);
+            } else if (a.error) {
+                errors[a.error] = true;
+            }
         }
 
-        let aaaa = doh_query(domain, resolver, 'AAAA', 28);
-        if (aaaa.ok) {
-            successful_aaaa_samples++;
-            merge_addresses(addresses, seen, aaaa.addresses);
-        } else if (aaaa.error) {
-            errors[aaaa.error] = true;
+        if (families.ipv6) {
+            let aaaa = doh_query(domain, resolver, 'AAAA', 28);
+            if (aaaa.ok) {
+                successful_aaaa_samples++;
+                merge_addresses(addresses, seen, aaaa.addresses);
+            } else if (aaaa.error) {
+                errors[aaaa.error] = true;
+            }
         }
     }
 
@@ -233,18 +256,20 @@ function dns_doh(domain, resolver, samples) {
         ok: successful_a_samples > 0 || successful_aaaa_samples > 0,
         source: 'doh',
         resolver,
-        samples: sample_count,
+        samples: DOH_SAMPLE_COUNT,
+        ipv4_enabled: families.ipv4,
+        ipv6_enabled: families.ipv6,
         successful_a_samples,
         successful_aaaa_samples,
         addresses,
         detail: length(error_list) ? join('; ', error_list) : null
     };
 }
-function diagnostic_dns(source, domain, resolver, samples) {
+function diagnostic_dns(source, domain, resolver) {
     domain = trim(`${domain ?? ''}`);
     if (!valid_domain(domain)) return { ok: false, error: 'invalid domain name' };
     if (source == 'lan' || source == 'router') return dns_plain(domain, source);
-    if (source == 'doh') return dns_doh(domain, resolver, samples);
+    if (source == 'doh') return dns_doh(domain, resolver);
     return { ok: false, error: 'DNS source must be lan, router or doh' };
 }
 function diagnostic_request(domain) {
@@ -317,7 +342,7 @@ function diagnostic_firewall(address) {
     };
 }
 function dispatch(command, args) {
-    if (command == 'diagnostic-dns') return diagnostic_dns(args[0] || '', args[1] || '', args[2] || '', args[3] || '');
+    if (command == 'diagnostic-dns') return diagnostic_dns(args[0] || '', args[1] || '', args[2] || '');
     if (command == 'diagnostic-request') return diagnostic_request(args[0] || '');
     if (command == 'diagnostic-firewall') return diagnostic_firewall(args[0] || '');
     return { ok: false, error: `unsupported diagnostics command: ${command}` };

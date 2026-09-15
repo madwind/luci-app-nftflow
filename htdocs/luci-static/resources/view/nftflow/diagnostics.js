@@ -7,7 +7,7 @@
 var callDiagnosticDns = rpc.declare({
     object: 'luci.nftflow',
     method: 'diagnostic_dns',
-    params: [ 'source', 'domain', 'resolver', 'samples' ],
+    params: [ 'source', 'domain', 'resolver' ],
     expect: { '': {} },
     reject: true
 });
@@ -252,15 +252,9 @@ return view.extend({
             E('option', { 'value': '8.8.8.8' }, '8.8.8.8'),
             E('option', { 'value': '223.5.5.5' }, '223.5.5.5')
         ]);
-        var dohSamples = E('select', { 'class': 'cbi-input-select' }, [
-            E('option', { 'value': '5' }, '5'),
-            E('option', { 'value': '10' }, '10')
-        ]);
         var dohControls = E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; margin-bottom:.5rem;' }, [
             E('span', {}, _('Resolver')),
-            dohResolver,
-            E('span', {}, _('Samples')),
-            dohSamples
+            dohResolver
         ]);
 
         var lanCard = dnsCard(_('LAN DNS'));
@@ -345,18 +339,36 @@ return view.extend({
             });
         }
 
-        function runDns(source, domain, card, resolver, samples) {
+        function runDns(source, domain, card, resolver) {
             nftflowUi.setState(card.state, 'notice', _('Running...'));
             card.body.replaceChildren();
-            return callDiagnosticDns(source, domain, resolver || '', samples || '').then(function(result) {
+            return callDiagnosticDns(source, domain, resolver || '').then(function(result) {
                 if (result && result.ok === true) {
                     if (source === 'doh') {
-                        var requested = Number(result.samples || samples || 0);
+                        var requested = Number(result.samples || 0);
                         var aDone = Number(result.successful_a_samples || 0);
                         var aaaaDone = Number(result.successful_aaaa_samples || 0);
-                        var complete = requested > 0 && aDone === requested && aaaaDone === requested;
-                        nftflowUi.setState(card.state, complete ? 'ok' : 'warn',
-                            _('Resolver: %s · A %d/%d · AAAA %d/%d').format(result.resolver || resolver, aDone, requested, aaaaDone, requested));
+                        var families = [];
+                        var samples = [];
+                        var complete = requested > 0;
+
+                        if (result.ipv4_enabled === true) {
+                            families.push('IPv4');
+                            samples.push('A %d/%d'.format(aDone, requested));
+                            complete = complete && aDone === requested;
+                        }
+                        if (result.ipv6_enabled === true) {
+                            families.push('IPv6');
+                            samples.push('AAAA %d/%d'.format(aaaaDone, requested));
+                            complete = complete && aaaaDone === requested;
+                        }
+
+                        var status = _('Resolver: %s').format(result.resolver || resolver);
+                        if (families.length)
+                            status += ' · ' + _('System: %s').format(families.join(' + '));
+                        if (samples.length)
+                            status += ' · ' + samples.join(' · ');
+                        nftflowUi.setState(card.state, complete ? 'ok' : 'warn', status);
                     } else {
                         nftflowUi.setState(card.state, 'ok', result.resolver ? _('Resolver: %s').format(result.resolver) : _('Done'));
                     }
@@ -414,7 +426,7 @@ return view.extend({
                     return runDns('router', domain, routerCard);
                 }).then(function(result) {
                     dnsResults.push(result);
-                    return runDns('doh', domain, dohCard, dohResolver.value, dohSamples.value);
+                    return runDns('doh', domain, dohCard, dohResolver.value);
                 }).then(function(result) {
                     dnsResults.push(result);
                     activeCapture.requestStart = activeCapture.lines.length;
