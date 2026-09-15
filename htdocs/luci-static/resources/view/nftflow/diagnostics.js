@@ -7,7 +7,7 @@
 var callDiagnosticDns = rpc.declare({
     object: 'luci.nftflow',
     method: 'diagnostic_dns',
-    params: [ 'source', 'domain' ],
+    params: [ 'source', 'domain', 'resolver', 'samples' ],
     expect: { '': {} },
     reject: true
 });
@@ -215,15 +215,15 @@ function addressTable(result, firewall) {
     }));
 }
 
-function dnsCard(title) {
+function dnsCard(title, controls) {
     var state = E('span', {}, _('Pending'));
     var body = E('div');
+    var children = [ E('h4', { 'style': 'margin-top:0;' }, title) ];
+    if (controls) children.push(controls);
+    children.push(state, body);
+
     return {
-        root: E('div', { 'class': 'cbi-section', 'style': 'flex:1 1 22rem; min-width:0;' }, [
-            E('h4', { 'style': 'margin-top:0;' }, title),
-            state,
-            body
-        ]),
+        root: E('div', { 'class': 'cbi-section', 'style': 'flex:1 1 22rem; min-width:0;' }, children),
         state: state,
         body: body
     };
@@ -247,9 +247,25 @@ return view.extend({
         var overallState = E('span', { 'aria-live': 'polite' });
         var logState = E('span', { 'aria-live': 'polite' }, _('Connecting runtime log...'));
 
+        var dohResolver = E('select', { 'class': 'cbi-input-select' }, [
+            E('option', { 'value': '1.1.1.1' }, '1.1.1.1'),
+            E('option', { 'value': '8.8.8.8' }, '8.8.8.8'),
+            E('option', { 'value': '223.5.5.5' }, '223.5.5.5')
+        ]);
+        var dohSamples = E('select', { 'class': 'cbi-input-select' }, [
+            E('option', { 'value': '5' }, '5'),
+            E('option', { 'value': '10' }, '10')
+        ]);
+        var dohControls = E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; margin-bottom:.5rem;' }, [
+            E('span', {}, _('Resolver')),
+            dohResolver,
+            E('span', {}, _('Samples')),
+            dohSamples
+        ]);
+
         var lanCard = dnsCard(_('LAN DNS'));
         var routerCard = dnsCard(_('Router DNS'));
-        var dohCard = dnsCard(_('DoH 1.1.1.1'));
+        var dohCard = dnsCard(_('DoH'), dohControls);
 
         var requestState = E('span');
         var requestSummary = E('div');
@@ -329,14 +345,24 @@ return view.extend({
             });
         }
 
-        function runDns(source, domain, card) {
+        function runDns(source, domain, card, resolver, samples) {
             nftflowUi.setState(card.state, 'notice', _('Running...'));
             card.body.replaceChildren();
-            return callDiagnosticDns(source, domain).then(function(result) {
-                if (result && result.ok === true)
-                    nftflowUi.setState(card.state, 'ok', result.resolver ? _('Resolver: %s').format(result.resolver) : _('Done'));
-                else
+            return callDiagnosticDns(source, domain, resolver || '', samples || '').then(function(result) {
+                if (result && result.ok === true) {
+                    if (source === 'doh') {
+                        var requested = Number(result.samples || samples || 0);
+                        var aDone = Number(result.successful_a_samples || 0);
+                        var aaaaDone = Number(result.successful_aaaa_samples || 0);
+                        var complete = requested > 0 && aDone === requested && aaaaDone === requested;
+                        nftflowUi.setState(card.state, complete ? 'ok' : 'warn',
+                            _('Resolver: %s · A %d/%d · AAAA %d/%d').format(result.resolver || resolver, aDone, requested, aaaaDone, requested));
+                    } else {
+                        nftflowUi.setState(card.state, 'ok', result.resolver ? _('Resolver: %s').format(result.resolver) : _('Done'));
+                    }
+                } else {
                     nftflowUi.setState(card.state, 'warn', result && (result.error || result.detail) ? (result.error || result.detail) : _('Query failed'));
+                }
                 return result || { ok: false, addresses: [] };
             }).catch(function(error) {
                 nftflowUi.setState(card.state, 'error', nftflowUi.errorMessage(error));
@@ -388,7 +414,7 @@ return view.extend({
                     return runDns('router', domain, routerCard);
                 }).then(function(result) {
                     dnsResults.push(result);
-                    return runDns('doh', domain, dohCard);
+                    return runDns('doh', domain, dohCard, dohResolver.value, dohSamples.value);
                 }).then(function(result) {
                     dnsResults.push(result);
                     activeCapture.requestStart = activeCapture.lines.length;
