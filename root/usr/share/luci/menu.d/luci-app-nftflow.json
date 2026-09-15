@@ -29,5 +29,10 @@
         "title": "Routing",
         "order": 5,
         "action": { "type": "view", "path": "nftflow/routing" }
+    },
+    "admin/services/nftflow/diagnostics": {
+        "title": "Diagnostics",
+        "order": 6,
+        "action": { "type": "view", "path": "nftflow/diagnostics" }
     }
 }
