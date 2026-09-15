@@ -173,6 +173,21 @@ const methods = {
     routing_uninstall: { args: {}, call: request => defer_ctl(request, [ 'component', 'routing', 'uninstall' ], 'Routing uninstall') },
     config_read: { args: {}, call: request => defer_ctl(request, [ 'config-read' ], 'Configuration read') },
     config_apply: { args: { config: '' }, call: request => defer_ctl_file(request, 'config-apply-file', request_args(request).config || '', 'Configuration save and apply') },
+    diagnostic_dns: {
+        args: { source: '', domain: '' },
+        call: request => {
+            let args = request_args(request);
+            return defer_ctl(request, [ 'diagnostic-dns', args.source || '', args.domain || '' ], 'DNS diagnostic');
+        }
+    },
+    diagnostic_request: {
+        args: { domain: '' },
+        call: request => defer_ctl(request, [ 'diagnostic-request', request_args(request).domain || '' ], 'Request diagnostic')
+    },
+    diagnostic_firewall: {
+        args: { address: '' },
+        call: request => defer_ctl(request, [ 'diagnostic-firewall', request_args(request).address || '' ], 'Firewall diagnostic')
+    },
     action: {
         args: { name: '' },
         call: request => {
