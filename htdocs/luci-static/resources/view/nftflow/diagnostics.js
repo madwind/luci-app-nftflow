@@ -36,7 +36,7 @@ var TARGET_PATTERNS = [
 ];
 var ROUTE_RE = /\[([^\[\]]+?)\s*->\s*([^\[\]]+?)\]/g;
 var LOG_QUIET_MS = 600;
-var LOG_WAIT_MAX_MS = 3000;
+var LOG_WAIT_MAX_MS = 4000;
 
 function delay(ms) {
     return new Promise(function(resolve) { window.setTimeout(resolve, ms); });
@@ -99,6 +99,15 @@ function uniqueAddresses(results) {
         });
     });
     return values;
+}
+
+function lineMatchesRequest(line, domain, addresses) {
+    if (line.toLowerCase().indexOf(domain.toLowerCase()) >= 0)
+        return true;
+
+    return (addresses || []).some(function(address) {
+        return line.indexOf(address) >= 0;
+    });
 }
 
 function relatedTrace(lines, domain, seedAddresses) {
@@ -331,14 +340,23 @@ return view.extend({
             });
         }
 
-        function waitForQuiet(capture) {
+        function waitForRelatedLog(capture, domain, addresses) {
             var started = Date.now();
+
             function loop() {
                 var now = Date.now();
-                if (now - capture.lastChange >= LOG_QUIET_MS || now - started >= LOG_WAIT_MAX_MS)
+                var requestLines = capture.lines.slice(capture.requestStart);
+                var related = requestLines.some(function(line) {
+                    return lineMatchesRequest(line, domain, addresses);
+                });
+
+                if (related && now - capture.lastChange >= LOG_QUIET_MS)
+                    return Promise.resolve();
+                if (now - started >= LOG_WAIT_MAX_MS)
                     return Promise.resolve();
                 return delay(150).then(loop);
             }
+
             return loop();
         }
 
@@ -411,9 +429,10 @@ return view.extend({
                         return { ok: false, detail: nftflowUi.errorMessage(error) };
                     });
                 }).then(function(requestResult) {
+                    var dnsAddresses = uniqueAddresses(dnsResults);
                     nftflowUi.setState(requestState, requestResult && requestResult.ok === true ? 'ok' : 'warn',
                         requestResult && requestResult.ok === true ? _('Page request completed') : ((requestResult && requestResult.detail) || _('Page request failed')));
-                    return waitForQuiet(activeCapture).then(function() { return requestResult; });
+                    return waitForRelatedLog(activeCapture, domain, dnsAddresses).then(function() { return requestResult; });
                 }).then(function() {
                     var requestLines = activeCapture.lines.slice(activeCapture.requestStart);
                     var dnsAddresses = uniqueAddresses(dnsResults);
