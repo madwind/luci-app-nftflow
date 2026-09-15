@@ -5,6 +5,7 @@ RUNTIME_CTL=/usr/libexec/nftflow/runtime.uc
 CONFIG_CTL=/usr/libexec/nftflow/config.uc
 FIREWALL_CTL=/usr/libexec/nftflow/firewall.uc
 ROUTING_CTL=/usr/libexec/nftflow/routing.uc
+DIAGNOSTICS_CTL=/usr/libexec/nftflow/diagnostics.uc
 
 run_ucode() {
     /usr/bin/ucode "$@"
@@ -112,6 +113,8 @@ case "$1" in
         exec /usr/bin/ucode "$FIREWALL_CTL" "$@" ;;
     route|route-apply|routing-read|routing-runtime|routing-save-file)
         exec /usr/bin/ucode "$ROUTING_CTL" "$@" ;;
+    diagnostic-dns|diagnostic-request|diagnostic-firewall)
+        exec /usr/bin/ucode "$DIAGNOSTICS_CTL" "$@" ;;
     status|prepare|cleanup|bootstrap-rules|cleanup-rules|state|action|component|component-start|component-status)
         exec /usr/bin/ucode "$RUNTIME_CTL" "$@" ;;
     *)
