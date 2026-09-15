@@ -184,27 +184,60 @@ function diagnostic_request(domain) {
         detail: result.ok ? null : (result.output || 'page request failed')
     };
 }
+function runtime_sets(family) {
+    let result = capture('/usr/sbin/nft -j list sets');
+    if (!result.ok) return { ok: false, error: result.output || 'unable to list nftables sets' };
+
+    let payload;
+    try { payload = json(result.output || ''); }
+    catch (e) { return { ok: false, error: 'invalid nftables JSON output' }; }
+
+    let sets = [], wanted = family == 4 ? 'ipv4_addr' : 'ipv6_addr';
+    let objects = type(payload) == 'object' ? payload.nftables : null;
+    if (type(objects) != 'array') return { ok: false, error: 'invalid nftables set list' };
+
+    for (let object in objects) {
+        if (type(object) != 'object' || type(object.set) != 'object') continue;
+        let set = object.set;
+        let set_type = set.type;
+        let matches_type = false;
+        if (type(set_type) == 'string') matches_type = set_type == wanted;
+        else if (type(set_type) == 'array') {
+            for (let item in set_type) if (`${item}` == wanted) matches_type = true;
+        }
+        if (!matches_type || !set.family || !set.table || !set.name) continue;
+        push(sets, { family: `${set.family}`, table: `${set.table}`, set: `${set.name}` });
+    }
+    return { ok: true, sets };
+}
 function diagnostic_firewall(address) {
     address = trim(`${address ?? ''}`);
     let family = address_family(address);
     if (!family) return { ok: false, error: 'invalid IP address' };
-    let set_name = family == 4 ? 'nftflow_direct4' : 'nftflow_direct6';
-    let listed = capture(`/usr/sbin/nft list set inet nftflow ${set_name}`);
-    if (!listed.ok)
-        return { ok: false, address, family, set: set_name, error: listed.output || `cannot read ${set_name}` };
 
-    let result = capture(`/usr/sbin/nft get element inet nftflow ${set_name} ${q(`{ ${address} }`)}`);
-    let expires = null;
-    let found = match(result.output || '', /expires\s+([^\s,}]+)/);
-    if (found) expires = found[1];
+    let discovered = runtime_sets(family);
+    if (!discovered.ok) return { ok: false, address, family, error: discovered.error };
+
+    let matches = [];
+    for (let spec in discovered.sets) {
+        let result = capture(`/usr/sbin/nft get element ${q(spec.family)} ${q(spec.table)} ${q(spec.set)} ${q(`{ ${address} }`)}`);
+        if (!result.ok) continue;
+        let expires = null;
+        let found = match(result.output || '', /expires\s+([^\s,}]+)/);
+        if (found) expires = found[1];
+        push(matches, {
+            family: spec.family,
+            table: spec.table,
+            set: spec.set,
+            expires,
+            detail: result.output || null
+        });
+    }
     return {
         ok: true,
         address,
         family,
-        set: set_name,
-        direct: result.ok,
-        expires,
-        detail: result.ok ? (result.output || null) : null
+        matches
     };
 }
 function dispatch(command, args) {
