@@ -35,8 +35,7 @@ var TARGET_PATTERNS = [
     /\b(?:target|destination|remote)\s*[=:]\s*(\[[0-9A-Fa-f:.]+\]|(?:\d{1,3}\.){3}\d{1,3})(?::\d+)?/ig
 ];
 var ROUTE_RE = /\[([^\[\]]+?)\s*->\s*([^\[\]]+?)\]/g;
-var LOG_QUIET_MS = 600;
-var LOG_WAIT_MAX_MS = 4000;
+var REQUEST_LOG_GRACE_MS = 1500;
 
 function delay(ms) {
     return new Promise(function(resolve) { window.setTimeout(resolve, ms); });
@@ -99,15 +98,6 @@ function uniqueAddresses(results) {
         });
     });
     return values;
-}
-
-function lineMatchesRequest(line, domain, addresses) {
-    if (line.toLowerCase().indexOf(domain.toLowerCase()) >= 0)
-        return true;
-
-    return (addresses || []).some(function(address) {
-        return line.indexOf(address) >= 0;
-    });
 }
 
 function relatedTrace(lines, domain, seedAddresses) {
@@ -279,7 +269,6 @@ return view.extend({
         function appendEntry(entry) {
             if (!isRuntimeEntry(entry) || !activeCapture) return;
             activeCapture.lines.push(formatLogEntry(entry));
-            activeCapture.lastChange = Date.now();
         }
 
         function consumeFrame(frame) {
@@ -340,26 +329,6 @@ return view.extend({
             });
         }
 
-        function waitForRelatedLog(capture, domain, addresses) {
-            var started = Date.now();
-
-            function loop() {
-                var now = Date.now();
-                var requestLines = capture.lines.slice(capture.requestStart);
-                var related = requestLines.some(function(line) {
-                    return lineMatchesRequest(line, domain, addresses);
-                });
-
-                if (related && now - capture.lastChange >= LOG_QUIET_MS)
-                    return Promise.resolve();
-                if (now - started >= LOG_WAIT_MAX_MS)
-                    return Promise.resolve();
-                return delay(150).then(loop);
-            }
-
-            return loop();
-        }
-
         function runDns(source, domain, card) {
             nftflowUi.setState(card.state, 'notice', _('Running...'));
             card.body.replaceChildren();
@@ -411,7 +380,7 @@ return view.extend({
             return startLogStream().then(function(ready) {
                 if (!ready) throw new Error(_('Runtime log subscription is unavailable.'));
 
-                activeCapture = { lines: [], lastChange: Date.now(), requestStart: 0 };
+                activeCapture = { lines: [], requestStart: 0 };
                 var dnsResults = [];
 
                 return runDns('lan', domain, lanCard).then(function(result) {
@@ -423,16 +392,14 @@ return view.extend({
                 }).then(function(result) {
                     dnsResults.push(result);
                     activeCapture.requestStart = activeCapture.lines.length;
-                    activeCapture.lastChange = Date.now();
                     nftflowUi.setState(requestState, 'notice', _('Requesting https://%s/ ...').format(domain));
                     return callDiagnosticRequest(domain).catch(function(error) {
                         return { ok: false, detail: nftflowUi.errorMessage(error) };
                     });
                 }).then(function(requestResult) {
-                    var dnsAddresses = uniqueAddresses(dnsResults);
                     nftflowUi.setState(requestState, requestResult && requestResult.ok === true ? 'ok' : 'warn',
                         requestResult && requestResult.ok === true ? _('Page request completed') : ((requestResult && requestResult.detail) || _('Page request failed')));
-                    return waitForRelatedLog(activeCapture, domain, dnsAddresses).then(function() { return requestResult; });
+                    return delay(REQUEST_LOG_GRACE_MS).then(function() { return requestResult; });
                 }).then(function() {
                     var requestLines = activeCapture.lines.slice(activeCapture.requestStart);
                     var dnsAddresses = uniqueAddresses(dnsResults);
