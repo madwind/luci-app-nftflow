@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-nftflow
 PKG_VERSION:=1.2.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 
 PKG_LICENSE:=Apache-2.0 MIT
 PKG_LICENSE_FILES:=LICENSE-APACHE LICENSE
@@ -14,9 +14,7 @@ LUCI_EXTRA_DEPENDS:= \
 	nftables (>=0), \
 	kmod-nft-fib (>=0), \
 	kmod-nft-tproxy (>=0), \
-	kmod-veth (>=0), \
-	ip-full (>=0), \
-	uclient-fetch (>=0)
+	ip (>=0)
 LUCI_PKGARCH:=all
 LUCI_MAINTAINER:=Ivon Wei <madwind.cn@gmail.com>
 LUCI_URL:=https://github.com/madwind/luci-app-nftflow
