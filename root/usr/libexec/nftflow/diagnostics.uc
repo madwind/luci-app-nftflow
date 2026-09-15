@@ -189,9 +189,11 @@ function diagnostic_firewall(address) {
     let family = address_family(address);
     if (!family) return { ok: false, error: 'invalid IP address' };
     let set_name = family == 4 ? 'nftflow_direct4' : 'nftflow_direct6';
+    let listed = capture(`/usr/sbin/nft list set inet nftflow ${set_name}`);
+    if (!listed.ok)
+        return { ok: false, address, family, set: set_name, error: listed.output || `cannot read ${set_name}` };
+
     let result = capture(`/usr/sbin/nft get element inet nftflow ${set_name} ${q(`{ ${address} }`)}`);
-    if (!result.ok && match(result.output || '', /No such file or directory|No such file/i))
-        return { ok: false, address, family, set: set_name, error: result.output || `cannot read ${set_name}` };
     let expires = null;
     let found = match(result.output || '', /expires\s+([^\s,}]+)/);
     if (found) expires = found[1];
@@ -202,7 +204,7 @@ function diagnostic_firewall(address) {
         set: set_name,
         direct: result.ok,
         expires,
-        detail: result.output || null
+        detail: result.ok ? (result.output || null) : null
     };
 }
 function dispatch(command, args) {
