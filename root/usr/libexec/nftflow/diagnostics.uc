@@ -62,6 +62,10 @@ function add_address(addresses, seen, value) {
     seen[address] = true;
     push(addresses, { address, family: address_family(address) });
 }
+function merge_addresses(addresses, seen, values) {
+    for (let item in values || [])
+        if (type(item) == 'object') add_address(addresses, seen, item.address);
+}
 function parse_nslookup(output) {
     let addresses = [], seen = {}, answer = false;
     for (let source_line in split(output || '', '\n')) {
@@ -153,10 +157,24 @@ function dns_plain(domain, source) {
 function uclient_available() {
     return fs.access('/bin/uclient-fetch', 'x') === true;
 }
-function doh_query(domain, record_type, answer_type) {
+function doh_endpoint(resolver, domain, record_type) {
+    if (resolver == '1.1.1.1')
+        return `https://1.1.1.1/dns-query?name=${domain}&type=${record_type}`;
+    if (resolver == '8.8.8.8')
+        return `https://8.8.8.8/resolve?name=${domain}&type=${record_type}`;
+    if (resolver == '223.5.5.5')
+        return `https://223.5.5.5/resolve?name=${domain}&type=${record_type}`;
+    return null;
+}
+function doh_sample_count(value) {
+    return int(value || 0) == 10 ? 10 : 5;
+}
+function doh_query(domain, resolver, record_type, answer_type) {
     if (!uclient_available()) return { ok: false, unavailable: true, addresses: [], error: 'uclient-fetch is not installed' };
 
-    let url = `https://1.1.1.1/dns-query?name=${domain}&type=${record_type}`;
+    let url = doh_endpoint(resolver, domain, record_type);
+    if (!url) return { ok: false, addresses: [], error: 'unsupported DoH resolver' };
+
     let result = capture(`/bin/uclient-fetch -q -T 5 -O - --header=${q('accept: application/dns-json')} ${q(url)}`);
     if (!result.ok) return { ok: false, addresses: [], error: result.output || `DoH ${record_type} request failed` };
 
@@ -175,29 +193,52 @@ function doh_query(domain, record_type, answer_type) {
     }
     return { ok: true, addresses };
 }
-function dns_doh(domain) {
-    let a = doh_query(domain, 'A', 1);
-    let aaaa = doh_query(domain, 'AAAA', 28);
-    let addresses = [], seen = {};
-    for (let item in a.addresses || []) add_address(addresses, seen, item.address);
-    for (let item in aaaa.addresses || []) add_address(addresses, seen, item.address);
-    let errors = [];
-    if (!a.ok) push(errors, a.error);
-    if (!aaaa.ok && aaaa.error != a.error) push(errors, aaaa.error);
-    return {
-        ok: a.ok && aaaa.ok,
-        unavailable: a.unavailable === true || aaaa.unavailable === true,
+function dns_doh(domain, resolver, samples) {
+    resolver = trim(`${resolver ?? ''}`) || '1.1.1.1';
+    if (!doh_endpoint(resolver, domain, 'A')) return { ok: false, error: 'unsupported DoH resolver' };
+    if (!uclient_available()) return {
+        ok: false,
+        unavailable: true,
         source: 'doh',
-        resolver: '1.1.1.1',
+        resolver,
+        samples: doh_sample_count(samples),
+        addresses: [],
+        detail: 'uclient-fetch is not installed'
+    };
+
+    let sample_count = doh_sample_count(samples);
+    let addresses = [], seen = {}, errors = {}, successful_samples = 0;
+
+    for (let i = 0; i < sample_count; i++) {
+        let result = doh_query(domain, resolver, 'A', 1);
+        if (result.ok) {
+            successful_samples++;
+            merge_addresses(addresses, seen, result.addresses);
+        } else if (result.error) {
+            errors[result.error] = true;
+        }
+    }
+
+    let aaaa = doh_query(domain, resolver, 'AAAA', 28);
+    if (aaaa.ok) merge_addresses(addresses, seen, aaaa.addresses);
+    else if (aaaa.error) errors[aaaa.error] = true;
+
+    let error_list = keys(errors);
+    return {
+        ok: successful_samples > 0,
+        source: 'doh',
+        resolver,
+        samples: sample_count,
+        successful_samples,
         addresses,
-        detail: length(errors) ? join('; ', errors) : null
+        detail: length(error_list) ? join('; ', error_list) : null
     };
 }
-function diagnostic_dns(source, domain) {
+function diagnostic_dns(source, domain, resolver, samples) {
     domain = trim(`${domain ?? ''}`);
     if (!valid_domain(domain)) return { ok: false, error: 'invalid domain name' };
     if (source == 'lan' || source == 'router') return dns_plain(domain, source);
-    if (source == 'doh') return dns_doh(domain);
+    if (source == 'doh') return dns_doh(domain, resolver, samples);
     return { ok: false, error: 'DNS source must be lan, router or doh' };
 }
 function diagnostic_request(domain) {
@@ -270,7 +311,7 @@ function diagnostic_firewall(address) {
     };
 }
 function dispatch(command, args) {
-    if (command == 'diagnostic-dns') return diagnostic_dns(args[0] || '', args[1] || '');
+    if (command == 'diagnostic-dns') return diagnostic_dns(args[0] || '', args[1] || '', args[2] || '', args[3] || '');
     if (command == 'diagnostic-request') return diagnostic_request(args[0] || '');
     if (command == 'diagnostic-firewall') return diagnostic_firewall(args[0] || '');
     return { ok: false, error: `unsupported diagnostics command: ${command}` };
