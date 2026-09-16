@@ -34,6 +34,10 @@ return view.extend({
         var message = E('div', { 'class': 'cbi-section-descr', 'aria-live': 'polite' });
         var runtimeState = E('span', { 'aria-live': 'polite' }, _('Not loaded'));
         var runtimeRequest = null;
+        var runtimeFolded = '';
+        var runtimeFull = '';
+        var runtimeExpanded = false;
+        var runtimeToggle = null;
         var pageVisible = true;
         var actionInProgress = false;
         var editor;
@@ -51,16 +55,30 @@ return view.extend({
             nftflowUi.setState(message, state, value);
         }
 
+        function updateRuntimeView() {
+            activeEditor.markSaved(runtimeExpanded ? runtimeFull : runtimeFolded);
+            if (runtimeToggle) {
+                runtimeToggle.disabled = !runtimeFull || runtimeFull === runtimeFolded;
+                runtimeToggle.textContent = runtimeExpanded ? _('Collapse') : _('Show all');
+            }
+        }
+
         function invalidateRuntime() {
-            activeEditor.markSaved(_('# Runtime rules are not loaded yet.\n'));
+            runtimeFolded = _('# Runtime rules are not loaded yet.\n');
+            runtimeFull = runtimeFolded;
+            runtimeExpanded = false;
+            updateRuntimeView();
             nftflowUi.setState(runtimeState, 'notice', _('Not loaded'));
         }
 
         function updateRuntime(next) {
             var active = next && next.firewall_active === true;
-            activeEditor.markSaved(next && next.active
+            runtimeFolded = next && next.active
                 ? next.active
-                : _('# No active NftFlow nftables tables were found.\n'));
+                : _('# No active NftFlow nftables tables were found.\n');
+            runtimeFull = next && next.active_full ? next.active_full : runtimeFolded;
+            runtimeExpanded = false;
+            updateRuntimeView();
             nftflowUi.setState(runtimeState, active ? 'ok' : 'notice', active ? _('Installed') : _('Not installed'));
             if (editor)
                 editor.setInstalled(active);
@@ -232,6 +250,16 @@ return view.extend({
             setMessage('error', nftflowUi.errorMessage(result, _('Unable to read the Firewall file.')));
         }
 
+        runtimeToggle = E('button', {
+            'class': 'btn cbi-button cbi-button-action',
+            'type': 'button',
+            'disabled': true
+        }, _('Show all'));
+        runtimeToggle.addEventListener('click', function() {
+            runtimeExpanded = !runtimeExpanded;
+            updateRuntimeView();
+        });
+
         var refreshButton = E('button', {
             'class': 'btn cbi-button cbi-button-action',
             'type': 'button'
@@ -240,10 +268,11 @@ return view.extend({
             refreshRuntime();
         });
 
+        var runtimeActions = E('span', {}, [ runtimeToggle, ' ', refreshButton ]);
         var runtimeToolbar = E('div', {
             'class': 'cbi-section-descr',
             'style': 'display:flex; align-items:center; justify-content:space-between; gap:1em'
-        }, [ runtimeState, refreshButton ]);
+        }, [ runtimeState, runtimeActions ]);
 
         window.addEventListener('pagehide', function() {
             pageVisible = false;

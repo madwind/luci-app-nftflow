@@ -213,13 +213,19 @@ function managed_tables() {
 function runtime_current() {
     let managed = managed_tables();
     if (!managed.ok) return managed;
-    let output = [];
+    let output = [], output_full = [];
     for (let spec in managed.tables) {
         let listed = nft(`list table ${spec.family} ${spec.name}`);
         if (!listed.ok) return { ok: false, error: trim(listed.output || '') || `unable to read nftables table ${spec.family} ${spec.name}` };
-        if (trim(listed.output || '')) push(output, fold_runtime(trim(listed.output)));
+        let current = trim(listed.output || '');
+        if (current) {
+            push(output, fold_runtime(current));
+            push(output_full, current);
+        }
     }
-    return { ok: true, active: length(output) ? join('\n', output) + '\n' : '# No managed NftFlow nftables tables were found.\n', firewall_active: length(managed.tables) > 0 };
+    let active = length(output) ? join('\n', output) + '\n' : '# No managed NftFlow nftables tables were found.\n';
+    let active_full = length(output_full) ? join('\n', output_full) + '\n' : active;
+    return { ok: true, active, active_full, firewall_active: length(managed.tables) > 0 };
 }
 function transaction(current_tables, desired) {
     let lines = [];
