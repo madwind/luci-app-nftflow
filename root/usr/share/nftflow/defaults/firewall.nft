@@ -40,7 +40,7 @@ table inet nftflow {
         policy accept;
         ct direction reply return
         meta mark & 0xfe != 0x0 return
-        udp dport 53 meta mark set 0x1 tproxy to :12345 accept
+        meta l4proto { tcp, udp } th dport 53 meta mark set 0x1 tproxy to :12345 accept
         ct mark & 0x101 == 0x100 meta nfproto ipv4 update @nftflow_direct4 { ip daddr } return
         ct mark & 0x101 == 0x100 meta nfproto ipv6 update @nftflow_direct6 { ip6 daddr } return
         ct mark & 0x101 == 0x1 meta l4proto { tcp, udp } meta mark set 0x1 tproxy to :12345 accept
@@ -61,7 +61,7 @@ table inet nftflow {
         meta skgid %gid% return
         ct direction reply return
         meta mark & 0xff != 0x0 return
-        udp dport 53 meta mark set 0x1 accept
+        meta l4proto { tcp, udp } th dport 53 meta mark set 0x1 accept
         ct mark & 0x101 == 0x100 meta nfproto ipv4 update @nftflow_direct4 { ip daddr } return
         ct mark & 0x101 == 0x100 meta nfproto ipv6 update @nftflow_direct6 { ip6 daddr } return
         ct mark & 0x101 == 0x1 meta mark set 0x1 accept
