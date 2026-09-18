@@ -95,6 +95,13 @@ jobs:
           test -x "$SDK_CACHE_ROOT/$SDK_DIRECTORY/staging_dir/host/bin/apk"
           test -x "$SDK_CACHE_ROOT/$SDK_DIRECTORY/scripts/feeds"
 
+      - name: Install SDK host prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes python3-pyelftools
+
       - name: Prepare OpenWrt SDK
         if: steps.sdk-cache.outputs.cache-hit != 'true'
         shell: bash
