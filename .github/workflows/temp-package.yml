@@ -43,24 +43,11 @@ jobs:
       SDK_DIRECTORY: ${{ matrix.sdk_directory }}
       SDK_PREP_REV: "1"
       SDK_CACHE_ROOT: ${{ github.workspace }}/.cache/openwrt-sdk
+      BASE_PACKAGE_VERSION: "26.3.27"
+      TARGET_PACKAGE_VERSION: "26.9.9"
+      UPSTREAM_PACKAGES_REF: master
       ASSET_ARCH: ${{ matrix.asset_arch }}
-      TEMP_PACKAGE_NAME: ${{ secrets.TEMP_PACKAGE_NAME }}
-      TEMP_PACKAGE_VERSION: ${{ secrets.TEMP_PACKAGE_VERSION }}
-      TEMP_PACKAGE_RELEASE: ${{ secrets.TEMP_PACKAGE_RELEASE }}
-      TEMP_PACKAGE_HASH: ${{ secrets.TEMP_PACKAGE_HASH }}
-      TEMP_SOURCE_URL: ${{ secrets.TEMP_SOURCE_URL }}
     steps:
-      - name: Check required secrets
-        shell: bash
-        run: |
-          set -euo pipefail
-          for name in TEMP_PACKAGE_NAME TEMP_PACKAGE_VERSION TEMP_PACKAGE_RELEASE TEMP_PACKAGE_HASH TEMP_SOURCE_URL; do
-            [[ -n "${!name:-}" ]] || {
-              echo "Required repository secret is missing: $name" >&2
-              exit 1
-            }
-          done
-
       - name: Check out repository
         uses: actions/checkout@v7
         with:
@@ -131,10 +118,21 @@ jobs:
           path: ${{ env.SDK_CACHE_ROOT }}
           key: ${{ runner.os }}-temp-sdk-${{ env.OPENWRT_VERSION }}-${{ env.OPENWRT_TARGET }}-${{ env.OPENWRT_SUBTARGET }}-${{ env.SDK_ARCHIVE }}-${{ env.SDK_SHA256 }}-prepared-v${{ env.SDK_PREP_REV }}
 
+      - name: Check out upstream package feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone \
+            --depth 1 \
+            --branch "$UPSTREAM_PACKAGES_REF" \
+            https://github.com/openwrt/packages.git \
+            "$RUNNER_TEMP/upstream-packages"
+
       - name: Build temporary package
         shell: bash
         env:
           OPENWRT_SDK: ${{ env.SDK_CACHE_ROOT }}/${{ env.SDK_DIRECTORY }}
+          UPSTREAM_PACKAGES: ${{ runner.temp }}/upstream-packages
         run: |
           set -euo pipefail
           bash -n scripts/build-temp-package.sh
@@ -157,8 +155,7 @@ jobs:
     timeout-minutes: 5
     env:
       OPENWRT_VERSION: "25.12.5"
-      TEMP_PACKAGE_VERSION: ${{ secrets.TEMP_PACKAGE_VERSION }}
-      TEMP_PACKAGE_RELEASE: ${{ secrets.TEMP_PACKAGE_RELEASE }}
+      TARGET_PACKAGE_VERSION: "26.9.9"
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v8
@@ -175,18 +172,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          [[ -n "${TEMP_PACKAGE_VERSION:-}" ]] || {
-            echo "Required repository secret is missing: TEMP_PACKAGE_VERSION" >&2
-            exit 1
-          }
-          [[ -n "${TEMP_PACKAGE_RELEASE:-}" ]] || {
-            echo "Required repository secret is missing: TEMP_PACKAGE_RELEASE" >&2
-            exit 1
-          }
-
-          tag="temporary-${TEMP_PACKAGE_VERSION}-r${TEMP_PACKAGE_RELEASE}-openwrt-${OPENWRT_VERSION}"
-          title="Temporary package ${TEMP_PACKAGE_VERSION}-r${TEMP_PACKAGE_RELEASE}"
-          notes="Temporary compatibility packages built for OpenWrt ${OPENWRT_VERSION}. Remove this workflow after the official package feed catches up."
+          tag="temporary-${TARGET_PACKAGE_VERSION}-openwrt-${OPENWRT_VERSION}"
+          title="Temporary package ${TARGET_PACKAGE_VERSION}"
+          notes="Temporary packages built from the upstream OpenWrt package recipe for OpenWrt ${OPENWRT_VERSION}. Remove this workflow after the stable feed catches up."
 
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" release-artifact/*.apk --clobber

@@ -3,53 +3,68 @@ set -euo pipefail
 
 PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SDK="${OPENWRT_SDK:?OPENWRT_SDK is not set to an OpenWrt SDK directory}"
+UPSTREAM="${UPSTREAM_PACKAGES:?UPSTREAM_PACKAGES is not set}"
+BASE_VERSION="${BASE_PACKAGE_VERSION:?BASE_PACKAGE_VERSION is not set}"
+TARGET_VERSION="${TARGET_PACKAGE_VERSION:?TARGET_PACKAGE_VERSION is not set}"
+ASSET_ARCH="${ASSET_ARCH:?ASSET_ARCH is not set}"
 
-required=(
-    TEMP_PACKAGE_NAME
-    TEMP_PACKAGE_VERSION
-    TEMP_PACKAGE_RELEASE
-    TEMP_PACKAGE_HASH
-    TEMP_SOURCE_URL
-    ASSET_ARCH
-)
-for name in "${required[@]}"; do
-    [[ -n "${!name:-}" ]] || {
-        echo "Missing required environment variable: $name" >&2
-        exit 1
-    }
-done
-
-test -d "$SDK"
 test -d "$SDK/feeds/packages"
+test -d "$UPSTREAM"
 
-mapfile -t makefiles < <(
-    grep -rl --include=Makefile         "^PKG_NAME:=${TEMP_PACKAGE_NAME}$"         "$SDK/feeds/packages" |
+mapfile -t base_makefiles < <(
+    grep -rl --include=Makefile         "^PKG_VERSION:=$BASE_VERSION$"         "$SDK/feeds/packages" |
         sort
 )
 
-if (( ${#makefiles[@]} != 1 )); then
-    echo "Expected exactly one matching package recipe, found ${#makefiles[@]}" >&2
+if (( ${#base_makefiles[@]} != 1 )); then
+    echo "Expected exactly one package recipe at version $BASE_VERSION, found ${#base_makefiles[@]}" >&2
     exit 1
 fi
 
-package_makefile="${makefiles[0]}"
-package_dir="$(dirname "$package_makefile")"
-package_key="$(basename "$package_dir")"
-package_link="$SDK/package/feeds/packages/$package_key"
+base_makefile="${base_makefiles[0]}"
+relative="${base_makefile#"$SDK/feeds/packages/"}"
+upstream_makefile="$UPSTREAM/$relative"
 
-test -e "$package_link"
+test -f "$upstream_makefile"
+grep -qx "PKG_VERSION:=$TARGET_VERSION" "$upstream_makefile"
+
+base_name="$(sed -n 's/^PKG_NAME[[:space:]]*:=[[:space:]]*//p' "$base_makefile" | head -n1)"
+upstream_name="$(sed -n 's/^PKG_NAME[[:space:]]*:=[[:space:]]*//p' "$upstream_makefile" | head -n1)"
+[[ -n "$base_name" && "$base_name" == "$upstream_name" ]] || {
+    echo "Package identity mismatch between stable and upstream recipes" >&2
+    exit 1
+}
+
+base_source="$(sed -n 's/^PKG_SOURCE_URL[[:space:]]*:=[[:space:]]*//p' "$base_makefile" | head -n1)"
+upstream_source="$(sed -n 's/^PKG_SOURCE_URL[[:space:]]*:=[[:space:]]*//p' "$upstream_makefile" | head -n1)"
+[[ -n "$base_source" && "$base_source" == "$upstream_source" ]] || {
+    echo "Package source changed upstream; refusing the temporary version-only update" >&2
+    exit 1
+}
+
+target_release="$(sed -n 's/^PKG_RELEASE[[:space:]]*:=[[:space:]]*//p' "$upstream_makefile" | head -n1)"
+target_hash="$(sed -n 's/^PKG_HASH[[:space:]]*:=[[:space:]]*//p' "$upstream_makefile" | head -n1)"
+
+[[ "$target_release" =~ ^[0-9]+$ ]] || {
+    echo "Invalid upstream package release" >&2
+    exit 1
+}
+[[ "$target_hash" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "Invalid upstream package hash" >&2
+    exit 1
+}
 
 backup="$(mktemp)"
 rendered="$(mktemp)"
-cp "$package_makefile" "$backup"
+cp "$base_makefile" "$backup"
 
 cleanup() {
-    cp "$backup" "$package_makefile"
+    cp "$backup" "$base_makefile"
     rm -f "$backup" "$rendered"
 }
 trap cleanup EXIT
 
-awk     -v version="$TEMP_PACKAGE_VERSION"     -v release="$TEMP_PACKAGE_RELEASE"     -v hash="$TEMP_PACKAGE_HASH"     -v source="$TEMP_SOURCE_URL" '
+awk     -v version="$TARGET_VERSION"     -v release="$target_release"     -v hash="$target_hash" '
         /^PKG_VERSION:=/ {
             print "PKG_VERSION:=" version
             next
@@ -62,28 +77,34 @@ awk     -v version="$TEMP_PACKAGE_VERSION"     -v release="$TEMP_PACKAGE_RELEASE
             print "PKG_HASH:=" hash
             next
         }
-        /^PKG_SOURCE_URL:=/ {
-            print "PKG_SOURCE_URL:=" source
-            next
-        }
         { print }
-    ' "$package_makefile" > "$rendered"
+    ' "$base_makefile" > "$rendered"
 
-mv "$rendered" "$package_makefile"
+mv "$rendered" "$base_makefile"
 
-grep -qx "PKG_VERSION:=$TEMP_PACKAGE_VERSION" "$package_makefile"
-grep -qx "PKG_RELEASE:=$TEMP_PACKAGE_RELEASE" "$package_makefile"
-grep -qx "PKG_HASH:=$TEMP_PACKAGE_HASH" "$package_makefile"
-grep -Fqx "PKG_SOURCE_URL:=$TEMP_SOURCE_URL" "$package_makefile"
+grep -qx "PKG_VERSION:=$TARGET_VERSION" "$base_makefile"
+grep -qx "PKG_RELEASE:=$target_release" "$base_makefile"
+grep -qx "PKG_HASH:=$target_hash" "$base_makefile"
+
+package_dir="$(dirname "$base_makefile")"
+package_key="$(basename "$package_dir")"
+package_link="$SDK/package/feeds/packages/$package_key"
+test -e "$package_link"
 
 apk_output_dir="$SDK/bin/packages"
 if [[ -d "$apk_output_dir" ]]; then
-    find "$apk_output_dir" -type f         -name "${TEMP_PACKAGE_NAME}-*.apk"         -delete
+    find "$apk_output_dir" -type f -name "$base_name-*.apk" -delete
 fi
 
-make -C "$SDK"     "package/feeds/packages/$package_key/clean"     "package/feeds/packages/$package_key/compile"     V=s
+build_log="$(mktemp)"
+if ! make -C "$SDK"     "package/feeds/packages/$package_key/clean"     "package/feeds/packages/$package_key/compile"     >"$build_log" 2>&1; then
+    tail -n 200 "$build_log" >&2
+    rm -f "$build_log"
+    exit 1
+fi
+rm -f "$build_log"
 
-expected="${TEMP_PACKAGE_NAME}-${TEMP_PACKAGE_VERSION}-r${TEMP_PACKAGE_RELEASE}.apk"
+expected="$base_name-$TARGET_VERSION-r$target_release.apk"
 mapfile -t packages < <(
     find "$SDK/bin/packages" -type f -name "$expected" -print | sort
 )
@@ -94,7 +115,7 @@ if (( ${#packages[@]} != 1 )); then
 fi
 
 out_dir="$PROJECT/dist"
-out="$out_dir/temporary-package-${TEMP_PACKAGE_VERSION}-r${TEMP_PACKAGE_RELEASE}-${ASSET_ARCH}.apk"
+out="$out_dir/temporary-package-$TARGET_VERSION-r$target_release-$ASSET_ARCH.apk"
 mkdir -p "$out_dir"
 cp -f "${packages[0]}" "$out"
 
