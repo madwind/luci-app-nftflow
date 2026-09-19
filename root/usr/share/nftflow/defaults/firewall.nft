@@ -2,6 +2,7 @@ table inet nftflow {
     set nftflow_private4 {
         type ipv4_addr
         flags interval
+        comment "Private and special-use IPv4 destinations"
         elements = {
             0.0.0.0/8, 10.0.0.0/8,
             100.64.0.0/10, 127.0.0.0/8,
@@ -14,6 +15,7 @@ table inet nftflow {
     set nftflow_private6 {
         type ipv6_addr
         flags interval
+        comment "Private and special-use IPv6 destinations"
         elements = {
             ::/128, ::1/128,
             fc00::/7, fe80::/10,
@@ -26,6 +28,7 @@ table inet nftflow {
         flags dynamic
         timeout 10m
         size 8192
+        comment "Dynamically learned IPv4 direct destinations"
     }
 
     set nftflow_direct6 {
@@ -33,44 +36,49 @@ table inet nftflow {
         flags dynamic
         timeout 10m
         size 8192
+        comment "Dynamically learned IPv6 direct destinations"
     }
 
     chain nftflow_prerouting {
         type filter hook prerouting priority mangle - 1;
         policy accept;
-        ct direction reply return
-        meta mark & 0xfe != 0x0 return
-        meta l4proto { tcp, udp } th dport 53 meta mark set 0x1 tproxy to :12345 accept
-        ct mark & 0x101 == 0x100 meta nfproto ipv4 update @nftflow_direct4 { ip daddr } return
-        ct mark & 0x101 == 0x100 meta nfproto ipv6 update @nftflow_direct6 { ip6 daddr } return
-        ct mark & 0x101 == 0x1 meta l4proto { tcp, udp } meta mark set 0x1 tproxy to :12345 accept
-        fib daddr type local return
-        ip daddr @nftflow_private4 return
-        ip6 daddr @nftflow_private6 return
-        ip daddr @nftflow_direct4 update @nftflow_direct4 { ip daddr } ct mark set ct mark | 0x100 return
-        ip6 daddr @nftflow_direct6 update @nftflow_direct6 { ip6 daddr } ct mark set ct mark | 0x100 return
-        udp dport 443 reject
-        meta l4proto { tcp, udp } ct mark set ct mark | 0x1 meta mark set 0x1 tproxy to :12345 accept
+        comment "Handle forwarded traffic"
+        ip daddr 192.0.2.1 counter reject comment "Reject sinkhole destination"
+        ct direction reply return comment "Skip reply traffic"
+        meta mark & 0xfe != 0x0 return comment "Skip externally marked traffic"
+        meta l4proto { tcp, udp } th dport 53 meta mark set 0x1 tproxy to :12345 accept comment "Intercept DNS traffic"
+        ct mark & 0x101 == 0x100 meta nfproto ipv4 update @nftflow_direct4 { ip daddr } return comment "Learn IPv4 direct destination"
+        ct mark & 0x101 == 0x100 meta nfproto ipv6 update @nftflow_direct6 { ip6 daddr } return comment "Learn IPv6 direct destination"
+        ct mark & 0x101 == 0x1 meta l4proto { tcp, udp } meta mark set 0x1 tproxy to :12345 accept comment "Restore proxied flow"
+        fib daddr type local return comment "Skip local destinations"
+        ip daddr @nftflow_private4 return comment "Bypass private IPv4 destinations"
+        ip6 daddr @nftflow_private6 return comment "Bypass private IPv6 destinations"
+        ip daddr @nftflow_direct4 update @nftflow_direct4 { ip daddr } ct mark set ct mark | 0x100 return comment "Use IPv4 direct cache"
+        ip6 daddr @nftflow_direct6 update @nftflow_direct6 { ip6 daddr } ct mark set ct mark | 0x100 return comment "Use IPv6 direct cache"
+        udp dport 443 reject comment "Reject QUIC"
+        meta l4proto { tcp, udp } ct mark set ct mark | 0x1 meta mark set 0x1 tproxy to :12345 accept comment "Proxy remaining TCP and UDP traffic"
     }
 
     chain nftflow_output {
         type route hook output priority mangle - 1;
         policy accept;
-        meta skgid %gid% meta nfproto ipv4 meta mark == 0x100 update @nftflow_direct4 { ip daddr } meta mark set 0x0 return
-        meta skgid %gid% meta nfproto ipv6 meta mark == 0x100 update @nftflow_direct6 { ip6 daddr } meta mark set 0x0 return
-        meta skgid %gid% return
-        ct direction reply return
-        meta mark & 0xff != 0x0 return
-        meta l4proto { tcp, udp } th dport 53 meta mark set 0x1 accept
-        ct mark & 0x101 == 0x100 meta nfproto ipv4 update @nftflow_direct4 { ip daddr } return
-        ct mark & 0x101 == 0x100 meta nfproto ipv6 update @nftflow_direct6 { ip6 daddr } return
-        ct mark & 0x101 == 0x1 meta mark set 0x1 accept
-        fib daddr type local return
-        ip daddr @nftflow_private4 return
-        ip6 daddr @nftflow_private6 return
-        ip daddr @nftflow_direct4 update @nftflow_direct4 { ip daddr } ct mark set ct mark | 0x100 return
-        ip6 daddr @nftflow_direct6 update @nftflow_direct6 { ip6 daddr } ct mark set ct mark | 0x100 return
-        udp dport 443 reject
-        meta l4proto { tcp, udp } ct mark set ct mark | 0x1 meta mark set 0x1 accept
+        comment "Handle locally generated traffic"
+        ip daddr 192.0.2.1 counter reject comment "Reject sinkhole destination"
+        meta skgid %gid% meta nfproto ipv4 meta mark == 0x100 update @nftflow_direct4 { ip daddr } meta mark set 0x0 return comment "Learn IPv4 direct destination from proxy process"
+        meta skgid %gid% meta nfproto ipv6 meta mark == 0x100 update @nftflow_direct6 { ip6 daddr } meta mark set 0x0 return comment "Learn IPv6 direct destination from proxy process"
+        meta skgid %gid% return comment "Skip proxy process traffic"
+        ct direction reply return comment "Skip reply traffic"
+        meta mark & 0xff != 0x0 return comment "Skip already marked traffic"
+        meta l4proto { tcp, udp } th dport 53 meta mark set 0x1 accept comment "Mark DNS traffic"
+        ct mark & 0x101 == 0x100 meta nfproto ipv4 update @nftflow_direct4 { ip daddr } return comment "Learn IPv4 direct destination"
+        ct mark & 0x101 == 0x100 meta nfproto ipv6 update @nftflow_direct6 { ip6 daddr } return comment "Learn IPv6 direct destination"
+        ct mark & 0x101 == 0x1 meta mark set 0x1 accept comment "Restore proxied flow"
+        fib daddr type local return comment "Skip local destinations"
+        ip daddr @nftflow_private4 return comment "Bypass private IPv4 destinations"
+        ip6 daddr @nftflow_private6 return comment "Bypass private IPv6 destinations"
+        ip daddr @nftflow_direct4 update @nftflow_direct4 { ip daddr } ct mark set ct mark | 0x100 return comment "Use IPv4 direct cache"
+        ip6 daddr @nftflow_direct6 update @nftflow_direct6 { ip6 daddr } ct mark set ct mark | 0x100 return comment "Use IPv6 direct cache"
+        udp dport 443 reject comment "Reject QUIC"
+        meta l4proto { tcp, udp } ct mark set ct mark | 0x1 meta mark set 0x1 accept comment "Proxy remaining TCP and UDP traffic"
     }
 }
