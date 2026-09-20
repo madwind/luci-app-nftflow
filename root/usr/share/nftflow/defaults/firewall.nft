@@ -43,7 +43,8 @@ table inet nftflow {
         type filter hook prerouting priority mangle - 1;
         policy accept;
         comment "Handle forwarded traffic"
-        ip daddr 192.0.2.1 meta l4proto tcp counter reject with tcp reset comment "Reject sinkhole TCP"\n        ip daddr 192.0.2.1 counter reject with icmpx type port-unreachable comment "Reject sinkhole destination"
+        ip daddr 192.0.2.1 meta l4proto tcp counter reject with tcp reset comment "Reject sinkhole TCP"
+        ip daddr 192.0.2.1 counter reject with icmpx type port-unreachable comment "Reject sinkhole destination"
         ct direction reply return comment "Skip reply traffic"
         meta mark & 0xfe != 0x0 return comment "Skip externally marked traffic"
         meta l4proto { tcp, udp } th dport 53 meta mark set 0x1 tproxy to :12345 accept comment "Intercept DNS traffic"
@@ -63,7 +64,8 @@ table inet nftflow {
         type route hook output priority mangle - 1;
         policy accept;
         comment "Handle locally generated traffic"
-        ip daddr 192.0.2.1 meta l4proto tcp counter reject with tcp reset comment "Reject sinkhole TCP"\n        ip daddr 192.0.2.1 counter reject with icmpx type port-unreachable comment "Reject sinkhole destination"
+        ip daddr 192.0.2.1 meta l4proto tcp counter reject with tcp reset comment "Reject sinkhole TCP"
+        ip daddr 192.0.2.1 counter reject with icmpx type port-unreachable comment "Reject sinkhole destination"
         meta skgid %gid% meta nfproto ipv4 meta mark == 0x100 update @nftflow_direct4 { ip daddr } meta mark set 0x0 return comment "Learn IPv4 direct destination from proxy process"
         meta skgid %gid% meta nfproto ipv6 meta mark == 0x100 update @nftflow_direct6 { ip6 daddr } meta mark set 0x0 return comment "Learn IPv6 direct destination from proxy process"
         meta skgid %gid% return comment "Skip proxy process traffic"
