@@ -121,7 +121,16 @@ function formatLogEntry(entry) {
     var message = entry && entry.msg != null ? String(entry.msg) : '';
     return message
         .replace(LOG_SOURCE, '')
-        .replace(/^nftflow:\s*/i, '');
+        .replace(/^nftflow:\s*/i, '')
+        .replace(/\\r\\n/g, '\n')
+        .replace(/\\n/g, '\n')
+        .replace(/\\r/g, '\n')
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n');
+}
+
+function formatLogLines(entry) {
+    return formatLogEntry(entry).split('\n');
 }
 
 function runtimeLogSection(options) {
@@ -293,7 +302,7 @@ function runtimeLogSection(options) {
     function appendKnownLogEntry(entry) {
         if (!isRelevantLogEntry(entry) || !rememberLogEntry(entry))
             return;
-        appendRenderedLogLine(formatLogEntry(entry));
+        formatLogLines(entry).forEach(appendRenderedLogLine);
     }
 
     function appendLogEntry(entry) {
@@ -316,7 +325,9 @@ function runtimeLogSection(options) {
             combined.forEach(function(entry) {
                 if (!isRelevantLogEntry(entry) || !rememberLogEntry(entry))
                     return;
-                merged.push(formatLogEntry(entry));
+                formatLogLines(entry).forEach(function(line) {
+                    merged.push(line);
+                });
             });
             initialLogsLoaded = true;
             logLines = nftflowUi.boundedLines(merged, LOG_LINES);
