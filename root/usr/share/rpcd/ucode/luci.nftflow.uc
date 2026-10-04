@@ -153,7 +153,7 @@ function defer_ctl_file(request, command, value, label) {
     if (!payload) return { ok: false, error: 'unable to create secure RPC temporary file' };
     return defer_exec(request, CTL, [ command, payload.path ], label, function() { remove_payload(payload); });
 }
-function valid_action(name) { return name == 'start' || name == 'stop' || name == 'restart'; }
+function valid_action(name) { return name == 'start' || name == 'stop' || name == 'restart' || name == 'reload'; }
 function request_args(request) { return request && request.args ? request.args : {}; }
 
 const methods = {

@@ -51,6 +51,8 @@ Runtime traffic statistics are optional. Configure `metrics_url` to an HTTP or H
 
 Firewall and Routing are part of the NftFlow lifecycle. Startup launches the configured process, removes stale traffic rules, installs Routing and then installs Firewall. Stop and failure cleanup terminate the managed process before removing Firewall and Routing.
 
+Service reload and Settings **Save & Apply** reconcile instances through procd instead of unconditionally stopping and starting the service. An unchanged runtime command, process group and open-file limit keep the runtime and its traffic rules in place; changes to those process parameters restart the runtime through procd. Reload also synchronizes GeoIP sets immediately. Changing metrics settings or the GeoIP file path does not restart an unchanged runtime. Explicit **Restart** and applying managed YAML contents still restart it.
+
 ## Runtime requirements
 
 The package targets OpenWrt 25.12+ with LuCI and uses the ucode runtime supplied by `luci-base`. Any managed runtime executable and optional data files must be installed and maintained separately by the user.

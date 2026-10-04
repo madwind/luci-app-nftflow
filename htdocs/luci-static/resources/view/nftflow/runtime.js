@@ -20,13 +20,6 @@ var callServiceSync = rpc.declare({
     reject: true
 });
 
-var callStatus = rpc.declare({
-    object: 'luci.nftflow',
-    method: 'status',
-    expect: { '': {} },
-    reject: true
-});
-
 return view.extend({
     load: function() {
         return uci.load('nftflow');
@@ -120,13 +113,7 @@ return view.extend({
             return callServiceSync().then(function(result) {
                 return nftflowUi.requireOk(result, _('NftFlow boot state synchronization failed.'));
             }).then(function(result) {
-                if (!result.enabled)
-                    return callAction('stop');
-
-                return callStatus().then(function(status) {
-                    status = nftflowUi.requireOk(status, _('Unable to read NftFlow service status.'));
-                    return callAction(status.running === true ? 'restart' : 'start');
-                });
+                return callAction(result.enabled ? 'reload' : 'stop');
             }).then(function(result) {
                 return nftflowUi.requireOk(result, _('NftFlow service state reconciliation failed.'));
             }).then(function() {

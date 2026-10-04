@@ -204,8 +204,8 @@ service_stopped() {
 reload_service() {
     load_main
     if [ "$enabled" = "1" ]; then
-        stop
         start
+        "$CTL" geoip-sync
     else
         stop
     fi

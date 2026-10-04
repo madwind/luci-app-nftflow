@@ -162,7 +162,7 @@ function run_ucode(path, args) {
 }
 function remove_temporary_files() {
     if (!mkdirp(RUNTIME)) return { ok: false, error: `cannot create ${RUNTIME}` };
-    for (let pattern in [ `${RUNTIME}/firewall-check*.nft*`, `${RUNTIME}/firewall-apply*.nft*`, `${RUNTIME}/*.tmp.*` ])
+    for (let pattern in [ `${RUNTIME}/firewall-apply*.nft*`, `${RUNTIME}/*.tmp.*` ])
         quiet(`rm -f ${pattern}`);
     quiet(`find ${q(RUNTIME)} -maxdepth 1 -type d -name 'rpc-*' -exec rm -rf {} \\;`);
     return { ok: true };
@@ -230,14 +230,14 @@ function action_worker(name) {
         : { ok: false, action: name, completed: false, error: detail || `NftFlow ${name} failed` };
 }
 function action(name) {
-    if (name != 'start' && name != 'stop' && name != 'restart') return { ok: false, error: 'unsupported service action' };
+    if (name != 'start' && name != 'stop' && name != 'restart' && name != 'reload') return { ok: false, error: 'unsupported service action' };
     let main = main_config();
     let before = lightweight_status(main);
-    if (before.runtime_state == 'starting' || before.runtime_state == 'stopping')
+    if (name != 'reload' && (before.runtime_state == 'starting' || before.runtime_state == 'stopping'))
         return { ok: false, action: name, accepted: false, runtime_state: before.runtime_state, error: 'another service action is already in progress' };
-    if ((name == 'start' || name == 'restart') && !main.enabled)
+    if ((name == 'start' || name == 'restart' || name == 'reload') && !main.enabled)
         return { ok: false, action: name, accepted: false, runtime_state: before.runtime_state, error: 'NftFlow is disabled. Enable it in Settings first.' };
-    if ((name == 'start' || name == 'restart') && !runtime_available(main))
+    if ((name == 'start' || name == 'restart' || name == 'reload') && !runtime_available(main))
         return { ok: false, action: name, accepted: false, runtime_state: 'unavailable', error: 'Runtime command is not configured.' };
     if (name == 'restart' && !before.running)
         return { ok: false, action: name, accepted: false, runtime_state: before.runtime_state, error: 'NftFlow is stopped. Use Start to start the service.' };

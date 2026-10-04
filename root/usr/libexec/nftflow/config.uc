@@ -84,7 +84,7 @@ function apply(raw) {
         if (!saved.ok) return { ok: false, error: saved.error };
     }
 
-    if (!quiet('/etc/init.d/nftflow running'))
+    if (!quiet('/etc/init.d/nftflow running runtime'))
         return { ok: true, saved: true, applied: false, path: resolved.path, exists: !!config, config };
 
     let restarted = capture('/etc/init.d/nftflow restart');
