@@ -31,8 +31,8 @@ apk add --upgrade luci-app-nftflow
 - Substitute `%gid%` from `nftflow.main.run_gid`
 - Substitute `%geoip:<tag>%` with cached IPv4/IPv6 named sets and bypass CN destinations by default
 - Detect GeoIP data changes every 60 seconds and atomically update active address sets
-- Learn direct runtime destinations from socket mark `0x40000000` and bypass them for 24 hours
-- Allow UDP/443 only for local, private and learned direct destinations; reject it before proxying
+- Learn direct runtime destinations from socket mark `0x100` and refresh their 10-minute bypass cache
+- Allow UDP/443 for local, private, CN and learned direct destinations; reject it before proxying
 - Edit, save, install and uninstall policy routing from the editor
 - Start the managed process before installing routing and firewall rules
 - Automatically remove firewall and routing rules after the managed process stops or exits unexpectedly
@@ -45,7 +45,7 @@ The configured command is intentionally administrator-controlled and is executed
 
 The YAML configuration file is empty by default. NftFlow can save and edit it, but does not interpret or validate runtime-specific semantics. If the selected program needs the YAML path, include that path in the configured command.
 
-The default Firewall template learns IPv4 and IPv6 destinations from runtime sockets carrying packet mark `0x40000000`. Learned destinations remain in dynamic nftables sets for 24 hours and new connections to them bypass the managed runtime. Direct and proxied connections are pinned with conntrack marks so destination expiry or learning cannot change the path of an existing connection. UDP/443 is accepted only for local, private and learned direct destinations; other UDP/443 traffic is rejected instead of being sent to the managed runtime. Configure the runtime's direct outbound sockets to use `SO_MARK=0x40000000` when this behavior is wanted. The default transparent proxy target port is `12345`; edit the Firewall rules if the managed runtime listens on another port.
+The default Firewall template learns IPv4 and IPv6 destinations from runtime sockets carrying packet mark `0x100` and from connections marked direct. Learned destinations remain in dynamic nftables sets with a 10-minute timeout, refreshed by matching traffic, and new connections to them bypass the managed runtime. Direct and proxied connections are pinned with conntrack marks so destination expiry or learning cannot change the path of an existing connection. UDP/443 bypasses rejection for local, private, CN and learned direct destinations; other UDP/443 traffic is rejected instead of being sent to the managed runtime. Configure the runtime's direct outbound sockets to use `SO_MARK=0x100` when this behavior is wanted. The default transparent proxy target port is `12345`; edit the Firewall rules if the managed runtime listens on another port.
 
 Runtime traffic statistics are optional. Configure `metrics_url` to an HTTP or HTTPS endpoint that returns JSON tag counters. `metrics_inbound_path` and `metrics_outbound_path` are dot-separated object paths used to locate the inbound and outbound tag maps in that document and must be configured explicitly. Each tag object must provide cumulative `uplink` and `downlink` byte counters. NftFlow does not discover a runtime-specific endpoint automatically.
 
