@@ -29,6 +29,7 @@ apk add --upgrade luci-app-nftflow
 - Configure dot-separated inbound and outbound JSON object paths for metrics extraction
 - Edit, save, install and uninstall nftables firewall rules from the editor
 - Substitute `%gid%` from `nftflow.main.run_gid`
+- Substitute `%geoip:<tag>%` with cached IPv4/IPv6 named sets and bypass CN destinations by default
 - Learn direct runtime destinations from socket mark `0x40000000` and bypass them for 24 hours
 - Allow UDP/443 only for local, private and learned direct destinations; reject it before proxying
 - Edit, save, install and uninstall policy routing from the editor
@@ -52,6 +53,30 @@ Firewall and Routing are part of the NftFlow lifecycle. Startup launches the con
 ## Runtime requirements
 
 The package targets OpenWrt 25.12+ with LuCI and uses the ucode runtime supplied by `luci-base`. Any managed runtime executable and optional data files must be installed and maintained separately by the user.
+
+## GeoIP firewall sets
+
+The default Firewall bypasses CN destinations before the learned-direct cache and final proxy rules. Established direct and proxy flows retain their conntrack marks. CN destinations also bypass the default UDP/443 rejection; DNS interception remains ahead of destination bypasses.
+
+Configure the GeoIP protobuf DAT path with UCI (the default is `/usr/share/xray/geoip.dat`):
+
+```sh
+uci set nftflow.main.geoip_file='/path/to/geoip.dat'
+uci commit nftflow
+```
+
+NftFlow does not download or maintain this file and does not require Xray as the managed runtime. A missing file or tag is an error when Firewall rules reference GeoIP. Rules without GeoIP placeholders do not require the file. Remove the CN bypass rules if GeoIP is not wanted.
+
+In Firewall rules, use:
+
+```nft
+ip daddr %geoip:cn% return
+ip6 daddr %geoip:cn% return
+```
+
+These become `@nftflow_geoip_cn4` and `@nftflow_geoip_cn6`. Tags are case-insensitive and may contain letters, numbers, underscores and hyphens. The nearest preceding `ip` or `ip6` expression in the rule selects the address family; placeholders without such an expression use the IPv4 set and nft validates the resulting type. Inverse DAT entries cannot be represented by these address sets and are rejected.
+
+Only referenced tags are extracted. Generated interval sets and `manifest.json` live in generation directories under `/var/lib/nftflow/geoip/`; the `current` symlink atomically selects a complete generation. Unchanged data and tag lists reuse the cache without parsing the DAT. Generated set definitions are inserted into the final ruleset; user `include` directives and tables outside `nftflow` remain forbidden. Saving checks the complete replacement transaction, and installing checks that transaction once before applying it with nft.
 
 ## License
 

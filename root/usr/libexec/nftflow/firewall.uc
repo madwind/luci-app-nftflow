@@ -5,11 +5,13 @@
 
 import * as fs from 'fs';
 import { cursor } from 'uci';
+import * as geoip from '/usr/libexec/nftflow/geoip.uc';
 
 const RUNTIME = '/var/run/nftflow';
 const FIREWALL_SOURCE = '/etc/nftflow/firewall.nft';
 const DEFAULT_SOURCE = '/usr/share/nftflow/defaults/firewall.nft';
 const APPLIED_SOURCE = `${RUNTIME}/firewall.applied.nft`;
+const GEOIP_APPLIED = `${RUNTIME}/geoip.applied.json`;
 const OWNED_TABLE = 'nftflow';
 const FOLD_THRESHOLD = 10;
 let sequence = 0;
@@ -123,7 +125,7 @@ function inspect_source(raw) {
         if (substr(text, open_pos, 1) != '{') return { ok: false, error: 'invalid nft table declaration' };
         let close_pos = matching_brace(text, open_pos);
         if (close_pos == null) return { ok: false, error: 'unbalanced nft table block' };
-        push(tables, { family: family.value, name: name.value });
+        push(tables, { family: family.value, name: name.value, open: open_pos, close: close_pos });
         pos = close_pos + 1;
     }
     return { ok: true, tables };
@@ -233,7 +235,7 @@ function transaction(current_tables, desired) {
     if (desired) push(lines, desired);
     return join('\n', lines);
 }
-function run_transaction(content) {
+function run_transaction(content, check_only) {
     if (!trim(content || '')) return { ok: true, detail: '' };
     sequence++;
     let path = `${RUNTIME}/firewall-apply.${time()}.${sequence}.nft`;
@@ -241,26 +243,46 @@ function run_transaction(content) {
     if (!saved.ok) return { ok: false, detail: saved.error };
     let checked = nft(`--check --file ${q(path)}`);
     if (!checked.ok) { fs.unlink(path); return { ok: false, detail: trim(checked.output || '') }; }
+    if (check_only) { fs.unlink(path); return { ok: true, detail: '' }; }
     let applied = nft(`--file ${q(path)}`);
     fs.unlink(path);
     return applied.ok ? { ok: true, detail: '' } : { ok: false, detail: trim(applied.output || '') };
 }
-function validate(raw) {
+function compile(raw) {
     raw = `${raw ?? ''}`;
     if (index(raw, '\0') >= 0) return { ok: false, valid: false, error: 'firewall file contains a NUL byte' };
     let template = render_template(raw);
     if (!template.ok) return { ok: false, valid: false, error: template.error };
     let inspected = inspect_source(template.rendered);
     if (!inspected.ok) return { ok: false, valid: false, error: inspected.error };
-    sequence++;
-    let path = `${RUNTIME}/firewall-check.${time()}.${sequence}.nft`;
-    let saved = atomic_write(path, template.rendered, 0o600);
-    if (!saved.ok) return { ok: false, valid: false, error: saved.error };
-    let checked = nft(`--check --file ${q(path)}`);
-    fs.unlink(path);
-    let detail = trim(checked.output || '');
-    if (!checked.ok) return { ok: false, valid: false, error: 'nftables syntax check failed', detail };
-    return { ok: true, valid: true, config: template.source, compiled: template.rendered };
+    let scanned = geoip.references(mask(template.rendered));
+    let cache = geoip.prepare(scanned.tags), edits = [], tables = [];
+    for (let ref in scanned.refs)
+        push(edits, { start: ref.start, end: ref.end, text: `@${geoip.set_name(ref.tag, ref.family)}` });
+    for (let table in inspected.tables) {
+        let tags = {};
+        for (let ref in scanned.refs)
+            if (ref.start > table.open && ref.end < table.close) tags[ref.tag] = true;
+        let used = sort(keys(tags));
+        if (!length(used)) continue;
+        let sets = [];
+        for (let tag in used) push(sets, cache.sets[tag]);
+        push(edits, { start: table.open + 1, end: table.open + 1, text: '\n' + join('\n', sets) });
+        push(tables, { family: table.family, tags: used });
+    }
+    let compiled = template.rendered;
+    sort(edits, (a, b) => b.start - a.start);
+    for (let edit in edits) compiled = substr(compiled, 0, edit.start) + edit.text + substr(compiled, edit.end);
+    return { ok: true, valid: true, config: template.source, compiled, geoip: { manifest: cache.manifest, tables } };
+}
+function validate(raw) {
+    let compiled = compile(raw);
+    if (!compiled.ok) return compiled;
+    let managed = managed_tables();
+    if (!managed.ok) return { ok: false, valid: false, error: managed.error };
+    let checked = run_transaction(transaction(managed.tables, compiled.compiled), true);
+    if (!checked.ok) return { ok: false, valid: false, error: 'nftables syntax check failed', detail: checked.detail };
+    return compiled;
 }
 function save(raw) {
     let checked = validate(raw);
@@ -286,17 +308,20 @@ function fail_open(error, detail) {
         if (!removed.ok) push(errors, `firewall cleanup failed: ${removed.detail || 'unknown error'}`);
     }
     fs.unlink(APPLIED_SOURCE);
+    fs.unlink(GEOIP_APPLIED);
     return { ok: false, valid: false, error, detail: join('; ', errors) };
 }
 function apply(raw) {
-    let checked = validate(raw);
+    let checked = compile(raw);
     if (!checked.valid) { delete checked.compiled; return checked; }
     let managed = managed_tables();
     if (!managed.ok) return { ok: false, valid: false, error: managed.error };
     let loaded = run_transaction(transaction(managed.tables, checked.compiled));
-    if (!loaded.ok) return fail_open('failed to load configured nftables tables', loaded.detail);
+    if (!loaded.ok) return { ok: false, valid: false, error: 'failed to load configured nftables tables', detail: loaded.detail };
     let source_saved = atomic_write(APPLIED_SOURCE, checked.config, 0o600);
     if (!source_saved.ok) return fail_open(source_saved.error || 'cannot save applied firewall snapshot', 'nftables runtime was removed after the snapshot save failed');
+    let geoip_saved = atomic_write(GEOIP_APPLIED, sprintf('%J\n', checked.geoip), 0o600);
+    if (!geoip_saved.ok) return fail_open(geoip_saved.error, 'cannot save applied GeoIP snapshot');
     return { ok: true, applied: true, config: checked.config };
 }
 function remove_firewall() {
@@ -305,6 +330,7 @@ function remove_firewall() {
     let removed = run_transaction(transaction(managed.tables, ''));
     if (!removed.ok) return { ok: false, error: 'failed to remove configured nftables tables', detail: removed.detail };
     fs.unlink(APPLIED_SOURCE);
+    fs.unlink(GEOIP_APPLIED);
     return { ok: true, enabled: false };
 }
 function read_rpc_input(path) {
@@ -332,7 +358,14 @@ function dispatch(command, args) {
 }
 
 let result;
-try { result = dispatch(ARGV[0] || '', slice(ARGV, 1)); }
+let lock;
+try {
+    if (!mkdirp(RUNTIME)) die(`cannot create ${RUNTIME}`);
+    lock = fs.open(`${RUNTIME}/firewall.lock`, 'a', 0o600);
+    if (!lock || lock.lock('x') !== true) die('cannot lock NftFlow firewall');
+    result = dispatch(ARGV[0] || '', slice(ARGV, 1));
+}
 catch (e) { result = { ok: false, error: `${e}` }; }
+if (lock) lock.close();
 printf('%J\n', result);
 exit(result?.ok === false ? 1 : 0);
