@@ -30,6 +30,7 @@ apk add --upgrade luci-app-nftflow
 - Edit, save, install and uninstall nftables firewall rules from the editor
 - Substitute `%gid%` from `nftflow.main.run_gid`
 - Substitute `%geoip:<tag>%` with cached IPv4/IPv6 named sets and bypass CN destinations by default
+- Detect GeoIP data changes every 60 seconds and atomically update active address sets
 - Learn direct runtime destinations from socket mark `0x40000000` and bypass them for 24 hours
 - Allow UDP/443 only for local, private and learned direct destinations; reject it before proxying
 - Edit, save, install and uninstall policy routing from the editor
@@ -77,6 +78,14 @@ ip6 daddr %geoip:cn% return
 These become `@nftflow_geoip_cn4` and `@nftflow_geoip_cn6`. Tags are case-insensitive and may contain letters, numbers, underscores and hyphens. The nearest preceding `ip` or `ip6` expression in the rule selects the address family; placeholders without such an expression use the IPv4 set and nft validates the resulting type. Inverse DAT entries cannot be represented by these address sets and are rejected.
 
 Only referenced tags are extracted. Generated interval sets and `manifest.json` live in generation directories under `/var/lib/nftflow/geoip/`; the `current` symlink atomically selects a complete generation. Unchanged data and tag lists reuse the cache without parsing the DAT. Generated set definitions are inserted into the final ruleset; user `include` directives and tables outside `nftflow` remain forbidden. Saving checks the complete replacement transaction, and installing checks that transaction once before applying it with nft.
+
+A separate procd instance checks the configured DAT every 60 seconds while NftFlow is enabled. Unchanged size and modification time require only a stat call. Changed metadata triggers SHA-256 comparison; changed contents regenerate the referenced tags. The watcher uses the installed Firewall snapshot, so saving an uninstalled edit does not change active set references. It flushes and replaces only GeoIP set elements in one checked nft transaction. It does not restart the runtime, rebuild chains or routing, clear conntrack, or flush learned-direct sets. Generation or transaction failure retains the active sets and is logged with the `nftflow` tag; synchronization is retried on the next poll. An uninstalled Firewall skips synchronization.
+
+To synchronize immediately after replacing the DAT or changing its configured path:
+
+```sh
+/usr/libexec/nftflow/nftflowctl geoip-sync
+```
 
 ## License
 

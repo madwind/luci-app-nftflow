@@ -11,6 +11,23 @@ run_ucode() {
     /usr/bin/ucode "$@"
 }
 
+if [ "$1" = "geoip-watch" ]; then
+    watch_sleep=
+    stop_watch() {
+        [ -z "$watch_sleep" ] || kill "$watch_sleep" >/dev/null 2>&1 || true
+        exit 0
+    }
+    trap stop_watch TERM INT
+    while :; do
+        watch_output="$(run_ucode "$FIREWALL_CTL" geoip-sync 2>&1)" ||
+            logger -t nftflow "GeoIP synchronization failed: $watch_output"
+        sleep 60 &
+        watch_sleep=$!
+        wait "$watch_sleep" || true
+        watch_sleep=
+    done
+fi
+
 if [ "$1" = "run-guarded" ]; then
     shift
     runtime_command="$1"
@@ -109,7 +126,7 @@ fi
 case "$1" in
     config-read|config-apply-file)
         exec /usr/bin/ucode "$CONFIG_CTL" "$@" ;;
-    firewall|firewall-runtime|firewall-save-file)
+    firewall|firewall-runtime|firewall-save-file|geoip-sync)
         exec /usr/bin/ucode "$FIREWALL_CTL" "$@" ;;
     route|route-apply|routing-read|routing-runtime|routing-save-file)
         exec /usr/bin/ucode "$ROUTING_CTL" "$@" ;;

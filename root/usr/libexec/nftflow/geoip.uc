@@ -187,16 +187,27 @@ function publish(manifest, sets) {
         if (match(name, /^generation-[A-Za-z0-9]+$/) && name != fs.basename(directory)) discard(`${CACHE}/${name}`);
 }
 
-export function prepare(tags) {
-    if (!length(tags)) return { sets: {}, manifest: null };
+function source_info() {
     let uci = cursor();
     let source = uci.get('nftflow', 'main', 'geoip_file') || '/usr/share/xray/geoip.dat';
     if (substr(source, 0, 1) != '/') die('geoip_file must be an absolute path');
     let stat = fs.stat(source);
     if (!stat || stat.type != 'file') die(`cannot read GeoIP file ${source}`);
+    return { source, stat };
+}
+
+function same_source_stat(manifest, info) {
+    return manifest && manifest.source == info.source && manifest.size == info.stat.size && manifest.mtime == info.stat.mtime;
+}
+
+export function source_unchanged(manifest) { return same_source_stat(manifest, source_info()); }
+
+export function prepare(tags) {
+    if (!length(tags)) return { sets: {}, manifest: null };
+    let info = source_info(), source = info.source, stat = info.stat;
     let previous = read_manifest();
     let same_tags = previous && join('\n', previous.tags || []) == join('\n', tags);
-    let same_stat = previous && previous.source == source && previous.size == stat.size && previous.mtime == stat.mtime;
+    let same_stat = same_source_stat(previous, info);
     let hash = same_stat ? previous.sha256 : hash_file(source);
     let sets = {}, reusable = previous && previous.source == source && previous.sha256 == hash && same_tags;
     if (reusable) {
@@ -214,6 +225,35 @@ export function prepare(tags) {
             die('GeoIP file changed while generating sets; retry the operation');
     }
     let manifest = { source, size: stat.size, mtime: stat.mtime, sha256: hash, tags };
-    if (!reusable || !same_stat) publish(manifest, sets);
+    if (!reusable) publish(manifest, sets);
+    else if (!same_stat) {
+        let content = sprintf('%J\n', manifest), pending = `${CACHE}/current/manifest.pending.json`;
+        if (fs.writefile(pending, content) != length(content) || fs.rename(pending, `${CACHE}/current/manifest.json`) !== true) {
+            fs.unlink(pending);
+            die('cannot update GeoIP manifest');
+        }
+    }
     return { sets, manifest };
+}
+
+export function hot_transaction(sets, tables) {
+    let commands = [], seen = {};
+    for (let table in tables) {
+        for (let tag in table.tags) {
+            for (let family in [ 4, 6 ]) {
+                let name = set_name(tag, family), key = `${table.family} ${name}`;
+                if (seen[key]) continue;
+                seen[key] = true;
+                // Read only our generated format, not user nftables syntax.
+                let block = split(sets[tag], `set ${name} {\n`)[1];
+                if (block == null) die(`missing cached GeoIP set ${name}`);
+                block = split(block, '\n}\n')[0];
+                let entries = match(block, /elements = \{([^}]*)\}/);
+                push(commands, `flush set ${table.family} nftflow ${name}`);
+                if (entries && trim(entries[1]))
+                    push(commands, `add element ${table.family} nftflow ${name} {${entries[1]}}`);
+            }
+        }
+    }
+    return join('\n', commands) + '\n';
 }

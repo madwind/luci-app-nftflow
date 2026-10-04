@@ -93,8 +93,8 @@ function service_running(name) {
     try {
         let result = ubus.call('service', 'list', { name }), service = result && result[name];
         if (type(service) != 'object' || type(service.instances) != 'object') return false;
-        for (let instance_name, instance in service.instances)
-            if (type(instance) == 'object' && (instance.running === true || instance.running === 1)) return true;
+        let instance = service.instances.runtime;
+        if (type(instance) == 'object' && (instance.running === true || instance.running === 1)) return true;
     } catch (e) {}
     return false;
 }

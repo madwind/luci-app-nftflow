@@ -333,6 +333,27 @@ function remove_firewall() {
     fs.unlink(GEOIP_APPLIED);
     return { ok: true, enabled: false };
 }
+function sync_geoip() {
+    let raw = read_text(APPLIED_SOURCE);
+    if (raw == null) return { ok: true, updated: false, active: false };
+    let scanned = geoip.references(mask(raw));
+    if (!length(scanned.tags)) return { ok: true, updated: false, active: true };
+    let applied;
+    try { applied = json(read_text(GEOIP_APPLIED) || ''); } catch (e) {}
+    if (!applied?.manifest || !length(applied.tables || []))
+        return { ok: false, error: 'missing applied GeoIP snapshot; install Firewall rules again' };
+    if (geoip.source_unchanged(applied.manifest)) return { ok: true, updated: false, active: true };
+    let cache = geoip.prepare(scanned.tags), updated = cache.manifest.sha256 != applied.manifest.sha256;
+    if (updated) {
+        let loaded = run_transaction(geoip.hot_transaction(cache.sets, applied.tables));
+        // Never invoke fail_open here: a failed atomic set update retains the old rules.
+        if (!loaded.ok) return { ok: false, error: 'GeoIP set update failed; active sets were retained', detail: loaded.detail };
+    }
+    applied.manifest = cache.manifest;
+    let saved = atomic_write(GEOIP_APPLIED, sprintf('%J\n', applied), 0o600);
+    if (!saved.ok) return { ok: false, error: saved.error, updated };
+    return { ok: true, updated, active: true, sha256: cache.manifest.sha256 };
+}
 function read_rpc_input(path) {
     path = `${path ?? ''}`;
     if (!match(path, /^\/var\/run\/nftflow\/rpc-[A-Za-z0-9]+\/payload$/)) return { ok: false, error: 'invalid internal RPC input path' };
@@ -340,6 +361,7 @@ function read_rpc_input(path) {
     return raw == null ? { ok: false, error: 'cannot read internal RPC input file' } : { ok: true, raw };
 }
 function dispatch(command, args) {
+    if (command == 'geoip-sync') return sync_geoip();
     if (command == 'firewall') {
         let mode = args[0] || 'on';
         if (mode == 'off') return remove_firewall();
