@@ -282,7 +282,8 @@ return view.extend({
 
         var variablesHelp = E('div', { 'class': 'cbi-section-descr' }, [
             E('div', {}, _('Available variables:')),
-            E('div', {}, [ E('code', {}, '%gid%'), ' = ', E('code', {}, gid) ])
+            E('div', {}, [ E('code', {}, '%gid%'), ' = ', E('code', {}, gid) ]),
+            E('div', {}, [ E('code', {}, '%geoip:<tag>%'), ' = ', _('GeoIP destinations (e.g. %geoip:cn%). Use ip for IPv4 and ip6 for IPv6.') ])
         ]);
 
         return E('div', { 'class': 'cbi-map' }, [
