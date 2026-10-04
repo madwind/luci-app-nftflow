@@ -246,7 +246,7 @@ function run_transaction(content, check_only) {
     if (check_only) { fs.unlink(path); return { ok: true, detail: '' }; }
     let applied = nft(`--file ${q(path)}`);
     fs.unlink(path);
-    return applied.ok ? { ok: true, detail: '' } : { ok: false, detail: trim(applied.output || '') };
+    return applied.ok ? { ok: true, detail: '' } : { ok: false, checked: true, detail: trim(applied.output || '') };
 }
 function compile(raw) {
     raw = `${raw ?? ''}`;
@@ -256,19 +256,22 @@ function compile(raw) {
     let inspected = inspect_source(template.rendered);
     if (!inspected.ok) return { ok: false, valid: false, error: inspected.error };
     let scanned = geoip.references(mask(template.rendered));
-    let cache = geoip.prepare(scanned.tags), edits = [], tables = [];
+    let cache = geoip.prepare(scanned.tags), edits = [], tables = [], definitions = {};
     for (let ref in scanned.refs)
         push(edits, { start: ref.start, end: ref.end, text: `@${geoip.set_name(ref.tag, ref.family)}` });
     for (let table in inspected.tables) {
-        let tags = {};
+        let definition = definitions[table.family];
+        if (!definition) definition = definitions[table.family] = { open: table.open, tags: {} };
         for (let ref in scanned.refs)
-            if (ref.start > table.open && ref.end < table.close) tags[ref.tag] = true;
-        let used = sort(keys(tags));
+            if (ref.start > table.open && ref.end < table.close) definition.tags[ref.tag] = true;
+    }
+    for (let family, definition in definitions) {
+        let used = sort(keys(definition.tags));
         if (!length(used)) continue;
         let sets = [];
         for (let tag in used) push(sets, cache.sets[tag]);
-        push(edits, { start: table.open + 1, end: table.open + 1, text: '\n' + join('\n', sets) });
-        push(tables, { family: table.family, tags: used });
+        push(edits, { start: definition.open + 1, end: definition.open + 1, text: '\n' + join('\n', sets) });
+        push(tables, { family, tags: used });
     }
     let compiled = template.rendered;
     sort(edits, (a, b) => b.start - a.start);
@@ -317,7 +320,10 @@ function apply(raw) {
     let managed = managed_tables();
     if (!managed.ok) return { ok: false, valid: false, error: managed.error };
     let loaded = run_transaction(transaction(managed.tables, checked.compiled));
-    if (!loaded.ok) return { ok: false, valid: false, error: 'failed to load configured nftables tables', detail: loaded.detail };
+    if (!loaded.ok) {
+        if (loaded.checked) return fail_open('failed to load configured nftables tables', loaded.detail);
+        return { ok: false, valid: false, error: 'nftables syntax check failed', detail: loaded.detail };
+    }
     let source_saved = atomic_write(APPLIED_SOURCE, checked.config, 0o600);
     if (!source_saved.ok) return fail_open(source_saved.error || 'cannot save applied firewall snapshot', 'nftables runtime was removed after the snapshot save failed');
     let geoip_saved = atomic_write(GEOIP_APPLIED, sprintf('%J\n', checked.geoip), 0o600);

@@ -209,7 +209,7 @@ export function prepare(tags) {
     let same_tags = previous && join('\n', previous.tags || []) == join('\n', tags);
     let same_stat = same_source_stat(previous, info);
     let hash = same_stat ? previous.sha256 : hash_file(source);
-    let sets = {}, reusable = previous && previous.source == source && previous.sha256 == hash && same_tags;
+    let sets = {}, reusable = previous && previous.sha256 == hash && same_tags;
     if (reusable) {
         for (let tag in tags) {
             sets[tag] = fs.readfile(`${CACHE}/current/${tag}.nft`);
