@@ -42,9 +42,9 @@ export function references(text) {
         pos = start + length(token[0]);
     }
     return { refs, tags: sort(keys(tags)) };
-}
+};
 
-export function set_name(tag, family) { return `nftflow_geoip_${tag}${family}`; }
+export function set_name(tag, family) { return `nftflow_geoip_${tag}${family}`; };
 
 function varint(reader) {
     let value = 0, factor = 1;
@@ -200,7 +200,7 @@ function same_source_stat(manifest, info) {
     return manifest && manifest.source == info.source && manifest.size == info.stat.size && manifest.mtime == info.stat.mtime;
 }
 
-export function source_unchanged(manifest) { return same_source_stat(manifest, source_info()); }
+export function source_unchanged(manifest) { return same_source_stat(manifest, source_info()); };
 
 export function prepare(tags) {
     if (!length(tags)) return { sets: {}, manifest: null };
@@ -234,7 +234,7 @@ export function prepare(tags) {
         }
     }
     return { sets, manifest };
-}
+};
 
 export function hot_transaction(sets, tables) {
     let commands = [], seen = {};
@@ -256,4 +256,4 @@ export function hot_transaction(sets, tables) {
         }
     }
     return join('\n', commands) + '\n';
-}
+};
