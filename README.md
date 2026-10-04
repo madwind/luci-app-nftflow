@@ -61,7 +61,7 @@ The package targets OpenWrt 25.12+ with LuCI and uses the ucode runtime supplied
 
 The default Firewall bypasses CN destinations before the learned-direct cache and final proxy rules. Established direct and proxy flows retain their conntrack marks. CN destinations also bypass the default UDP/443 rejection; DNS interception remains ahead of destination bypasses.
 
-Configure the GeoIP protobuf DAT path with UCI (the default is `/usr/share/xray/geoip.dat`):
+The GeoIP protobuf DAT path is empty by default. Configure it in Settings → Firewall → GeoIP file or with UCI before installing rules that reference GeoIP:
 
 ```sh
 uci set nftflow.main.geoip_file='/path/to/geoip.dat'

@@ -63,6 +63,17 @@ return view.extend({
         option.rmempty = false;
         option.default = '65536';
 
+        var firewall = map.section(form.NamedSection, 'main', 'nftflow', _('Firewall'));
+        firewall.anonymous = true;
+
+        option = firewall.option(form.Value, 'geoip_file', _('GeoIP file'), _('GeoIP DAT file used by Firewall placeholders such as %geoip:cn%. Required only when Firewall rules use GeoIP placeholders. Enter an absolute path to an existing file.'));
+        option.rmempty = true;
+        option.validate = function(section_id, value) {
+            if (!value)
+                return true;
+            return value.charAt(0) === '/' ? true : _('GeoIP file must be an absolute path.');
+        };
+
         var metrics = map.section(form.NamedSection, 'main', 'nftflow', _('Metrics'));
         metrics.anonymous = true;
 

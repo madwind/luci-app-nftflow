@@ -189,7 +189,8 @@ function publish(manifest, sets) {
 
 function source_info() {
     let uci = cursor();
-    let source = uci.get('nftflow', 'main', 'geoip_file') || '/usr/share/xray/geoip.dat';
+    let source = uci.get('nftflow', 'main', 'geoip_file');
+    if (!source) die('geoip_file is required when Firewall rules use GeoIP placeholders');
     if (substr(source, 0, 1) != '/') die('geoip_file must be an absolute path');
     let stat = fs.stat(source);
     if (!stat || stat.type != 'file') die(`cannot read GeoIP file ${source}`);
