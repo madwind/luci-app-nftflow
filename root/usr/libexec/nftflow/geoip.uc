@@ -238,13 +238,11 @@ export function prepare(tags) {
 };
 
 export function hot_transaction(sets, tables) {
-    let commands = [], seen = {};
+    let commands = [];
     for (let table in tables) {
         for (let tag in table.tags) {
             for (let family in [ 4, 6 ]) {
-                let name = set_name(tag, family), key = `${table.family} ${name}`;
-                if (seen[key]) continue;
-                seen[key] = true;
+                let name = set_name(tag, family);
                 // Read only our generated format, not user nftables syntax.
                 let block = split(sets[tag], `set ${name} {\n`)[1];
                 if (block == null) die(`missing cached GeoIP set ${name}`);
