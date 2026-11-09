@@ -12,14 +12,16 @@ const RUNTIME = '/var/run/nftflow';
 const ALIASES = RUNTIME + '/geodata';
 const MAX_FILE_SIZE = 128 * 1024 * 1024;
 
-function ensure_directory(path) {
+function ensure_directory(path, mode) {
     let state = fs.stat(path);
     if (!state) {
-        if (fs.mkdir(path, 0o700) !== true)
+        if (fs.mkdir(path, mode) !== true)
             die('cannot create GeoData directory ' + path);
         state = fs.stat(path);
     }
-    if (!state || state.type != 'directory' || fs.chmod(path, 0o700) !== true)
+    if (!state || state.type != 'directory')
+        die('invalid GeoData directory ' + path);
+    if (path == ALIASES && fs.chmod(path, 0o700) !== true)
         die('cannot secure GeoData directory ' + path);
 }
 
@@ -40,8 +42,8 @@ function file_info(kind) {
     if (source.size > MAX_FILE_SIZE)
         die(kind + ' file exceeds the 128 MiB browser limit');
 
-    ensure_directory(RUNTIME);
-    ensure_directory(ALIASES);
+    ensure_directory(RUNTIME, 0o755);
+    ensure_directory(ALIASES, 0o700);
 
     // The ACL names only these two aliases, never the configured source path.
     // Both directory and symlinks are controlled by root.
