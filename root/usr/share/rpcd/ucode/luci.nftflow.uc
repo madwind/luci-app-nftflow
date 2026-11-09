@@ -188,28 +188,9 @@ const methods = {
         args: { address: '' },
         call: request => defer_ctl(request, [ 'diagnostic-firewall', request_args(request).address || '' ], 'Firewall diagnostic')
     },
-    geodata_list: {
+    geodata_info: {
         args: { kind: '' },
-        call: request => defer_ctl(request, [ 'geodata-list', request_args(request).kind || '' ], 'GeoData category list')
-    },
-    geodata_browse: {
-        args: { kind: '', category: '', page: '', filter: '', entry_type: '' },
-        call: request => {
-            let a = request_args(request);
-            return defer_ctl(request, [ 'geodata-browse', a.kind || '', a.category || '', a.page || '0', a.filter || '', a.entry_type || '' ], 'GeoData category browser');
-        }
-    },
-    geodata_search: {
-        args: { kind: '', query: '', mode: '', regex: '', sensitive: '',
-                group: '', position: '', within: '' },
-        call: request => {
-            let a = request_args(request);
-            return defer_ctl(request, [
-                'geodata-search', a.kind || '', a.query || '', a.mode || 'match',
-                a.regex || '0', a.sensitive || '0', a.group || '0',
-                a.position || '0', a.within || '0'
-            ], 'GeoData search');
-        }
+        call: request => defer_ctl(request, [ 'geodata-info', request_args(request).kind || '' ], 'GeoData file information')
     },
     action: {
         args: { name: '' },
