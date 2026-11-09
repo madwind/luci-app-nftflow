@@ -132,6 +132,7 @@ case "$1" in
     route|route-apply|routing-read|routing-runtime|routing-save-file)
         exec /usr/bin/ucode "$ROUTING_CTL" "$@" ;;
     geodata-info)
+        shift
         exec /usr/bin/ucode "$GEODATA_CTL" "$@" ;;
     diagnostic-dns|diagnostic-request|diagnostic-firewall)
         exec /usr/bin/ucode "$DIAGNOSTICS_CTL" "$@" ;;
