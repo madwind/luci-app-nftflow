@@ -30,9 +30,14 @@
         "order": 5,
         "action": { "type": "view", "path": "nftflow/routing" }
     },
+    "admin/services/nftflow/geodata": {
+        "title": "GeoData",
+        "order": 6,
+        "action": { "type": "view", "path": "nftflow/geodata" }
+    },
     "admin/services/nftflow/diagnostics": {
         "title": "Diagnostics",
-        "order": 6,
+        "order": 7,
         "action": { "type": "view", "path": "nftflow/diagnostics" }
     }
 }
