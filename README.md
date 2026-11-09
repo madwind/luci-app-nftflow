@@ -37,6 +37,12 @@ apk add --upgrade luci-app-nftflow
 - Start the managed process before installing routing and firewall rules
 - Automatically remove firewall and routing rules after the managed process stops or exits unexpectedly
 
+## GeoData Explorer
+
+The **GeoData** LuCI page provides an on-demand, read-only explorer for local Xray/V2Ray `geosite.dat` and `geoip.dat` files. Configure **GeoSite file** and **GeoIP file** in Settings. The Explorer provides a categorized rule browser with page-by-page results, entry type and text filtering, global text search, and domain/IP matching against all categories. GeoSite rules show their type and attributes; GeoIP lookups use CIDR membership, including IPv6. Matching GeoSite regular-expression rules is not supported because Xray's RE2 regex syntax differs from ucode's POSIX expressions; the explorer reports when such rules were skipped. Text search supports optional POSIX regular expressions.
+
+The explorer uses the existing rpcd controller and a short-lived ucode worker, without a resident service, file downloads or changes to active firewall sets. Data files are read only when requested. Queries require a configured readable DAT file, and refuse files larger than 128 MiB.
+
 ## Runtime model
 
 NftFlow does not install, select or identify the program it manages. Configure the complete shell command in **Settings**, for example `/usr/bin/example --config /etc/nftflow/config.yaml`. NftFlow starts that command with the configured process GID and open-file limit.
