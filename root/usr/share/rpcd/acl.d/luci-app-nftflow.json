@@ -16,7 +16,10 @@
                     "config_read",
                     "diagnostic_dns",
                     "diagnostic_request",
-                    "diagnostic_firewall"
+                    "diagnostic_firewall",
+                    "geodata_list",
+                    "geodata_browse",
+                    "geodata_search"
                 ],
                 "luci.nftflow.package": [ "version" ],
                 "luci.nftflow.metrics": [ "traffic" ],
