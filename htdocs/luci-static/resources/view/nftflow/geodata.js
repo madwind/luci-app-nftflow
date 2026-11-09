@@ -117,6 +117,8 @@ return view.extend({
         });
         var regex = E('input', { 'type': 'checkbox' });
         var sensitive = E('input', { 'type': 'checkbox' });
+        var regexOption = E('label', {}, [ regex, ' ', _('Regex') ]);
+        var sensitiveOption = E('label', {}, [ sensitive, ' ', _('Case sensitive') ]);
         var searchButton = actionButton(_('Search'), true);
         var cancelButton = actionButton(_('Cancel'), false);
         var reloadButton = actionButton(_('Reload file'), false);
@@ -161,8 +163,8 @@ return view.extend({
                 E('div', { 'style': 'display:flex;align-items:center;flex-wrap:wrap;gap:.75rem;' }, [
                     inlineField(_('Mode'), searchMode),
                     inlineField(_('Query'), query, 'flex:1 1 16rem;min-width:0;'),
-                    E('label', {}, [ regex, ' ', _('Regex') ]),
-                    E('label', {}, [ sensitive, ' ', _('Case sensitive') ]),
+                    regexOption,
+                    sensitiveOption,
                     searchButton,
                     cancelButton
                 ])
@@ -235,10 +237,15 @@ return view.extend({
         }
 
         function updateModes() {
-            regex.disabled = searchMode.value !== 'text';
-            sensitive.disabled = searchMode.value !== 'text';
-            if (regex.disabled) regex.checked = false;
-            if (sensitive.disabled) sensitive.checked = false;
+            var textMode = searchMode.value === 'text';
+            regexOption.style.display = textMode ? '' : 'none';
+            sensitiveOption.style.display = textMode ? '' : 'none';
+            regex.disabled = !textMode;
+            sensitive.disabled = !textMode;
+            if (!textMode) {
+                regex.checked = false;
+                sensitive.checked = false;
+            }
         }
 
         function typeOptions(kind) {
