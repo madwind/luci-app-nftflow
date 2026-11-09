@@ -200,10 +200,15 @@ const methods = {
         }
     },
     geodata_search: {
-        args: { kind: '', query: '', mode: '', regex: '', sensitive: '' },
+        args: { kind: '', query: '', mode: '', regex: '', sensitive: '',
+                group: '', position: '', within: '' },
         call: request => {
             let a = request_args(request);
-            return defer_ctl(request, [ 'geodata-search', a.kind || '', a.query || '', a.mode || 'match', a.regex || '0', a.sensitive || '0' ], 'GeoData search');
+            return defer_ctl(request, [
+                'geodata-search', a.kind || '', a.query || '', a.mode || 'match',
+                a.regex || '0', a.sensitive || '0', a.group || '0',
+                a.position || '0', a.within || '0'
+            ], 'GeoData search');
         }
     },
     action: {
