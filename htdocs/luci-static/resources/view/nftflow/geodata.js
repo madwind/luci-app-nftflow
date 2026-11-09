@@ -89,13 +89,13 @@ function resultTable(entries) {
             E('th', {}, _('Value')),
             E('th', {}, _('Attributes'))
         ])),
-        E('tbody', {}, (entries && entries.length ? entries : []).map(function(e) {
+        E('tbody', {}, (entries && entries.length ? entries.map(function(e) {
             return E('tr', {}, [
                 E('td', {}, E('code', {}, e.type)),
                 E('td', { 'style': 'overflow-wrap:anywhere;' }, E('code', {}, e.value)),
                 E('td', { 'style': 'overflow-wrap:anywhere;' }, (e.attributes || []).join(', ') || '\u2014')
             ]);
-        }))
+        }) : [ E('tr', {}, E('td', { 'colspan': '3' }, _('No matching entries.'))) ]))
     ]));
 }
 
@@ -466,6 +466,7 @@ return view.extend({
         searchButton.onclick = search;
         cancelButton.onclick = function() {
             invalidate();
+            output.replaceChildren(E('p', {}, _('Operation cancelled.')));
             setStatus('notice', _('Operation cancelled.'));
         };
         reloadButton.onclick = function() { loadDataset(true); };
