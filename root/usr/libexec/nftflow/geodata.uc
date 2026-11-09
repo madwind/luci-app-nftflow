@@ -354,7 +354,7 @@ function search_entries(kind, query_arg, mode_arg, regex_arg, sensitive_arg,
             while (reader.pos < length(raw) && scanned < SEARCH_BATCH_ENTRIES) {
                 let item = field(reader, length(raw));
                 if (item.number != 2 || item.wire != 2) continue;
-                let entry = parse_entry(kind, item.value, false);
+                let entry = parse_entry(kind, item.value, mode == 'text');
                 scanned++;
                 let matched = false;
 
