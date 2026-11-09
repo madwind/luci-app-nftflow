@@ -39,11 +39,15 @@ apk add --upgrade luci-app-nftflow
 
 ## GeoData Explorer
 
-The **GeoData** LuCI page provides an on-demand, read-only explorer for local Xray/V2Ray `geosite.dat` and `geoip.dat` files. Configure **GeoSite file** and **GeoIP file** in Settings. The Explorer provides a categorized rule browser with page-by-page results, entry type and text filtering, global text search, and domain/IP matching against all categories. GeoSite rules show their type and attributes; GeoIP lookups use CIDR membership, including IPv6. Matching GeoSite regular-expression rules is not supported because Xray's RE2 regex syntax differs from ucode's POSIX expressions; the explorer reports when such rules were skipped. Text search supports optional POSIX regular expressions.
+The **GeoData** LuCI page browses and searches local Xray/V2Ray `geosite.dat` and `geoip.dat` files. Set the source paths in **Settings → Firewall**. It provides a category browser, rule types and attributes, filtered paging, text/regex searches, and domain/IP matching across categories.
 
-The explorer uses the existing rpcd controller and a short-lived ucode worker, without a resident service, file downloads or changes to active firewall sets. Data files are read only when requested. Queries require a configured readable DAT file, and refuse files larger than 128 MiB.
+**All parsing and searching now takes place inside your browser**, in a dedicated Web Worker. NftFlow does not parse DAT files for the explorer or run an indexing service on the router. The read-only `geodata-info` controller checks the configured file, reports its size and timestamps, and atomically prepares a root-owned download alias. LuCI obtains the binary file via `fs.read_direct()` and `cgi-io` with ACLs limited to **exactly** `/var/run/nftflow/geodata/geosite.dat` and `/var/run/nftflow/geodata/geoip.dat`. No wildcard file reads or public web-directory symlinks are used.
 
-For larger data files, GeoData keeps a compact, automatically invalidated category-offset index under `/tmp/nftflow-geodata/`, avoiding repeated full-file scans when browsing categories. The index is stored in temporary RAM-backed storage, not persistent flash. GeoSite match queries quickly reject categories whose protobuf domain values cannot match the requested hostname. Large searches are processed in bounded batches, with incremental results, progress display and a Cancel button rather than a single long-running LuCI RPC request. Unfiltered category browsing stops after filling the requested page.
+The browser retains the raw DAT in a transferable `ArrayBuffer`, indexes category offsets without constructing all rule objects, and decodes entries only when browsing or searching. IndexedDB caches a copy of the downloaded DAT in the browser; the configured file path, size, modification time and change time invalidate it. **Reload file** forces a new download. Browsing and searching use no router RPCs after the binary transfer. Source files are limited to 128 MiB; the browser parser also bounds its index size.
+
+GeoSite `domain`, `full`, and `keyword` matches and GeoIP CIDR matching (IPv4/IPv6) are implemented locally. GeoSite `regexp` rules are displayed and available to text search, but **are not evaluated in domain-match mode**: Xray uses RE2, whereas JavaScript uses a different regular-expression engine. The UI warns that domain-match results may therefore be incomplete. Regex **text search** uses the browser's JavaScript regexp engine and is unrelated to Xray domain regex matching.
+
+The existing firewall GeoIP extraction, nftables sets, and hot-update logic remain router-side and are independent of the explorer.
 
 ## Runtime model
 
