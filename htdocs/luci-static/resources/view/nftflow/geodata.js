@@ -187,8 +187,11 @@ return view.extend({
 
             var id = ++pending;
             var cursor = { group: '0', position: '0', within: '0' };
+            var searchKind = kind.value, searchMode = mode.value;
+            var searchRegex = regex.checked ? '1' : '0';
+            var searchSensitive = sensitive.checked ? '1' : '0';
             var groups = [], byName = Object.create(null), allNames = Object.create(null);
-            var totalMatches = 0, categoryCount = 0, skippedRegex = 0;
+            var totalMatches = 0, categoryCount = 0;
             var finished = false, percent = 0;
 
             selected = null;
@@ -209,7 +212,7 @@ return view.extend({
                 if (categoryCount > groups.length)
                     nodes.push(E('p', { 'class': 'warning' },
                         _('Showing only the first 80 matching categories.')));
-                if (kind.value === 'geosite' && mode.value === 'match')
+                if (searchKind === 'geosite' && searchMode === 'match')
                     nodes.push(E('p', { 'style': 'opacity:.75;' },
                         _('GeoSite regexp rules are not evaluated in match mode.')));
 
@@ -246,13 +249,12 @@ return view.extend({
 
             function searchNext() {
                 if (id !== pending) return Promise.resolve();
-                return callSearch(kind.value, input, mode.value,
-                    regex.checked ? '1' : '0', sensitive.checked ? '1' : '0',
+                return callSearch(searchKind, input, searchMode,
+                    searchRegex, searchSensitive,
                     cursor.group, cursor.position, cursor.within).then(check).then(function(result) {
                     if (id !== pending) return;
 
                     totalMatches += result.total || 0;
-                    skippedRegex += result.skipped_regex || 0;
                     (result.categories || []).forEach(function(item) {
                         if (!allNames[item.name]) {
                             allNames[item.name] = true;
