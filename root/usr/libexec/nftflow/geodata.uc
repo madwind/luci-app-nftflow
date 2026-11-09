@@ -183,13 +183,13 @@ function domain_attribute(raw) {
     return key;
 }
 
-function domain_entry(raw) {
+function domain_entry(raw, with_attrs) {
     let reader = string_reader(raw), kind = 2, value = '', attributes = [];
     while (reader.pos < length(raw)) {
         let item = field(reader, length(raw));
         if (item.number == 1 && item.wire == 0) kind = item.value;
         else if (item.number == 2 && item.wire == 2) value = item.value;
-        else if (item.number == 3 && item.wire == 2) {
+        else if (item.number == 3 && item.wire == 2 && with_attrs !== false) {
             let attr = domain_attribute(item.value);
             if (attr != null) push(attributes, attr);
         }
@@ -198,7 +198,7 @@ function domain_entry(raw) {
     return { type: names[kind] ?? 'unknown', value, attributes };
 }
 
-function network_entry(raw) {
+function network_entry(raw, with_value) {
     let reader = string_reader(raw), addr = null, bits = 0;
     while (reader.pos < length(raw)) {
         let item = field(reader, length(raw));
@@ -210,11 +210,11 @@ function network_entry(raw) {
         die('invalid GeoIP CIDR');
     let bytes = [];
     for (let i = 0; i < size; i++) push(bytes, ord(addr, i));
-    return { type: 'cidr', value: arrtoip(bytes) + '/' + bits, bytes, bits, attributes: [] };
+    return { type: 'cidr', value: with_value === false ? '' : arrtoip(bytes) + '/' + bits, bytes, bits, attributes: [] };
 }
 
-function parse_entry(kind, raw) {
-    return kind == 'geosite' ? domain_entry(raw) : network_entry(raw);
+function parse_entry(kind, raw, detailed) {
+    return kind == 'geosite' ? domain_entry(raw, detailed) : network_entry(raw, detailed);
 }
 
 function public_entry(entry) {
@@ -299,8 +299,9 @@ function browse(kind, tag, page_arg, filter_arg, type_arg) {
              page_size: PAGE_SIZE, entries };
 }
 
-function search_entries(kind, query_arg, mode_arg, regex_arg, sensitive_arg) {
-    let source = source_info(kind);
+function search_entries(kind, query_arg, mode_arg, regex_arg, sensitive_arg,
+                        group_arg, position_arg, within_arg) {
+    let source = source_info(kind), indexed = load_index(source);
     let query = trim('' + (query_arg ?? ''));
     let mode = '' + (mode_arg || 'match');
     let regex = regex_arg == '1', sensitive = sensitive_arg == '1';
@@ -313,7 +314,8 @@ function search_entries(kind, query_arg, mode_arg, regex_arg, sensitive_arg) {
     let address = null, domain = '';
     if (mode == 'match' && kind == 'geoip') {
         address = iptoarr(query);
-        if (!address) die('enter a valid IPv4 or IPv6 address');
+        if (!address || (length(address) != 4 && length(address) != 16))
+            die('enter a valid IPv4 or IPv6 address');
     }
     if (mode == 'match' && kind == 'geosite') {
         if (length(query) > 253 || !match(query, /^[A-Za-z0-9_.-]+$/) ||
@@ -322,46 +324,93 @@ function search_entries(kind, query_arg, mode_arg, regex_arg, sensitive_arg) {
         domain = lc(query);
     }
 
+    let group_index = int(group_arg || '0'), position = int(position_arg || '0');
+    let carry_within = within_arg == '1';
+    if (group_index < 0 || group_index > length(indexed.groups) || position < 0 ||
+        position > MAX_ENTRY_SIZE) die('invalid GeoData search cursor');
+    if (group_index == length(indexed.groups) && position) die('invalid GeoData search cursor');
+
     let results = [], total = 0, category_total = 0, skipped_regex = 0;
-    scan(source, function(raw) {
-        let meta = metadata(raw);
-        let matches = [], hits = 0, within = false;
+    let scanned = 0, group_work = 0, partial = 0;
+    let file = fs.open(source.path, 'r');
+    if (!file) die('cannot open GeoData file: ' + source.path);
+    try {
+        while (group_index < length(indexed.groups) &&
+               scanned < SEARCH_BATCH_ENTRIES && group_work < 100) {
+            let group = indexed.groups[group_index];
+            let raw = read_group(file, group, source.size);
+            if (position > length(raw)) die('invalid GeoData search cursor position');
 
-        visit_entries(raw, function(data) {
-            let entry = parse_entry(kind, data), matched = false;
-            if (mode == 'text') {
-                matched = text_match(entry.value, query, pattern, sensitive);
-            } else if (kind == 'geoip') {
-                matched = ip_contains(entry, address);
-                if (matched) within = true;
+            if (position == 0 && mode == 'text' && !regex &&
+                index(sensitive ? raw : lc(raw), sensitive ? query : lc(query)) < 0) {
+                group_index++;
+                group_work++;
+                continue;
+            }
+
+            let reader = string_reader(raw), hits = 0, matches = [];
+            let within = position > 0 ? carry_within : false;
+            reader.pos = position;
+            while (reader.pos < length(raw) && scanned < SEARCH_BATCH_ENTRIES) {
+                let item = field(reader, length(raw));
+                if (item.number != 2 || item.wire != 2) continue;
+                let entry = parse_entry(kind, item.value, false);
+                scanned++;
+                let matched = false;
+
+                if (mode == 'text') {
+                    matched = text_match(entry.value, query, pattern, sensitive);
+                } else if (kind == 'geoip') {
+                    matched = ip_contains(entry, address);
+                    if (matched) within = true;
+                } else if (entry.type == 'regexp') {
+                    skipped_regex++;
+                } else {
+                    matched = domain_matches(entry, domain);
+                }
+
+                if (matched && !(kind == 'geoip' && mode == 'match' && group.inverse)) {
+                    hits++;
+                    if (length(matches) < PREVIEW_SIZE)
+                        push(matches, public_entry(parse_entry(kind, item.value)));
+                }
+            }
+
+            let complete = reader.pos >= length(raw);
+            if (complete && kind == 'geoip' && mode == 'match' && group.inverse && !within) {
+                hits = 1;
+                matches = [{ type: 'inverse', value: 'Address is outside the listed CIDRs', attributes: [] }];
+            }
+
+            if (hits) {
+                total += hits;
+                category_total++;
+                if (length(results) < MAX_RESULT_GROUPS)
+                    push(results, { name: group.name, total: hits, inverse: group.inverse, matches });
+            }
+            if (complete) {
+                group_index++;
+                position = 0;
+                carry_within = false;
+                group_work++;
             } else {
-                if (entry.type == 'regexp') skipped_regex++;
-                else matched = domain_matches(entry, domain);
+                position = reader.pos;
+                carry_within = within;
+                partial = length(raw) ? position / length(raw) : 0;
+                break;
             }
-            if (matched) {
-                hits++;
-                if (length(matches) < PREVIEW_SIZE) push(matches, public_entry(entry));
-            }
-        });
-
-        if (kind == 'geoip' && mode == 'match' && meta.inverse) {
-            // Inverse GeoIP categories match addresses outside all listed ranges.
-            hits = within ? 0 : 1;
-            matches = within ? [] : [
-                { type: 'inverse', value: 'Address is outside the listed CIDRs', attributes: [] }
-            ];
         }
+    } catch (e) { file.close(); die('cannot search GeoData: ' + e); }
+    file.close();
 
-        if (!hits) return;
-        total += hits;
-        category_total++;
-        if (length(results) < MAX_RESULT_GROUPS)
-            push(results, { name: meta.tag, total: hits, inverse: meta.inverse, matches });
-    });
-
-    return { ok: true, kind, query, mode, total, category_total,
-             truncated: category_total > MAX_RESULT_GROUPS, skipped_regex,
-             categories: results };
+    return {
+        ok: true, kind, query, mode, total, category_total, scanned, skipped_regex,
+        categories: results, total_groups: length(indexed.groups),
+        next_group: group_index, next_position: position,
+        next_within: carry_within ? '1' : '0',
+        progress: (group_index + partial) / (length(indexed.groups) || 1),
+        done: group_index >= length(indexed.groups)
+    };
 }
 
 function dispatch(command, args) {
@@ -371,7 +420,8 @@ function dispatch(command, args) {
                       args[3] || '', args[4] || '');
     if (command == 'geodata-search')
         return search_entries(args[0] || '', args[1] || '', args[2] || 'match',
-                              args[3] || '0', args[4] || '0');
+                              args[3] || '0', args[4] || '0',
+                              args[5] || '0', args[6] || '0', args[7] || '0');
     return { ok: false, error: 'unsupported GeoData command' };
 }
 
