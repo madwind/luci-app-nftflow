@@ -113,7 +113,7 @@ return view.extend({
         var query = E('input', {
             'type': 'search', 'class': 'cbi-input-text',
             'placeholder': 'www.youtube.com', 'spellcheck': 'false',
-            'autocomplete': 'off'
+            'autocomplete': 'off', 'style': 'flex:1 1 auto;min-width:8rem;'
         });
         var regex = E('input', { 'type': 'checkbox' });
         var sensitive = E('input', { 'type': 'checkbox' });
@@ -226,7 +226,7 @@ return view.extend({
                 pending[key].reject(new Error('cancelled'));
                 delete pending[key];
             });
-            cancelButton.hidden = true;
+            cancelButton.style.display = 'none';
             searchButton.disabled = false;
         }
 
@@ -351,7 +351,7 @@ return view.extend({
             if (!ready || !selected) return Promise.resolve();
             invalidate();
             var turn = revision;
-            cancelButton.hidden = false;
+            cancelButton.style.display = '';
             title.textContent = (dataset.value === 'geosite' ? 'GeoSite' : 'GeoIP') + ' / ' + selected;
             browseControls.hidden = false;
             output.replaceChildren(E('p', {}, _('Loading category rules...')));
@@ -374,7 +374,7 @@ return view.extend({
             }).catch(function(error) {
                 if (turn === revision) errorMessage(error);
             }).finally(function() {
-                if (turn === revision) cancelButton.hidden = true;
+                if (turn === revision) cancelButton.style.display = 'none';
             });
         }
 
@@ -382,7 +382,7 @@ return view.extend({
             if (!ready || !query.value.trim()) return;
             invalidate();
             var turn = revision, kind = dataset.value, mode = searchMode.value;
-            cancelButton.hidden = false;
+            cancelButton.style.display = '';
             searchButton.disabled = true;
             selected = null;
             renderCategories();
@@ -409,7 +409,7 @@ return view.extend({
                 }
             }).finally(function() {
                 if (turn === revision) {
-                    cancelButton.hidden = true;
+                    cancelButton.style.display = 'none';
                     searchButton.disabled = false;
                 }
             });
@@ -433,7 +433,7 @@ return view.extend({
             output.replaceChildren(E('p', {}, _('Choose a category after the file loads.')));
             query.placeholder = kind === 'geoip' ? '1.1.1.1' : 'www.youtube.com';
             typeOptions(kind);
-            cancelButton.hidden = false;
+            cancelButton.style.display = '';
             setStatus('notice', _('Checking GeoData file...'));
 
             return callFileInfo(kind).then(check).then(async function(info) {
@@ -474,7 +474,7 @@ return view.extend({
             }).catch(function(error) {
                 if (turn === revision) errorMessage(error);
             }).finally(function() {
-                if (turn === revision) cancelButton.hidden = true;
+                if (turn === revision) cancelButton.style.display = 'none';
             });
         }
 
@@ -506,7 +506,7 @@ return view.extend({
             errorMessage(error);
         }
 
-        cancelButton.hidden = true;
+        cancelButton.style.display = 'none';
         browseControls.hidden = true;
         previous.disabled = next.disabled = true;
         updateModes();
