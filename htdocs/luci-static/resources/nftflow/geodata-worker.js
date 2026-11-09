@@ -133,8 +133,25 @@ function ipString(addr) {
     if (addr.length === 4) return Array.from(addr).join('.');
     var groups = [];
     for (var i = 0; i < 16; i += 2)
-        groups.push(((addr[i] << 8) | addr[i + 1]).toString(16));
-    return groups.join(':');
+        groups.push((addr[i] << 8) | addr[i + 1]);
+
+    var bestStart = -1, bestLength = 1;
+    for (var start = 0; start < groups.length;) {
+        if (groups[start] !== 0) { start++; continue; }
+        var end = start;
+        while (end < groups.length && groups[end] === 0) end++;
+        if (end - start > bestLength) {
+            bestStart = start;
+            bestLength = end - start;
+        }
+        start = end;
+    }
+    var format = function(items) {
+        return items.map(function(x) { return x.toString(16); }).join(':');
+    };
+    if (bestStart < 0) return format(groups);
+    return format(groups.slice(0, bestStart)) + '::' +
+        format(groups.slice(bestStart + bestLength));
 }
 
 function ipEntry(bytes, start, end, detailed) {
