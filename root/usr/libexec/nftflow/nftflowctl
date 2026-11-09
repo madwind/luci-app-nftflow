@@ -6,7 +6,7 @@ CONFIG_CTL=/usr/libexec/nftflow/config.uc
 FIREWALL_CTL=/usr/libexec/nftflow/firewall.uc
 ROUTING_CTL=/usr/libexec/nftflow/routing.uc
 DIAGNOSTICS_CTL=/usr/libexec/nftflow/diagnostics.uc
-GEODATA_CTL=/usr/libexec/nftflow/geodata.uc
+GEODATA_CTL=/usr/libexec/nftflow/geodata-info.uc
 
 run_ucode() {
     /usr/bin/ucode "$@"
@@ -131,7 +131,7 @@ case "$1" in
         exec /usr/bin/ucode "$FIREWALL_CTL" "$@" ;;
     route|route-apply|routing-read|routing-runtime|routing-save-file)
         exec /usr/bin/ucode "$ROUTING_CTL" "$@" ;;
-    geodata-list|geodata-browse|geodata-search)
+    geodata-info)
         exec /usr/bin/ucode "$GEODATA_CTL" "$@" ;;
     diagnostic-dns|diagnostic-request|diagnostic-firewall)
         exec /usr/bin/ucode "$DIAGNOSTICS_CTL" "$@" ;;
