@@ -389,6 +389,7 @@ async function search(request, token) {
         return a.name.localeCompare(b.name);
     });
     postMessage({ type: 'search', id: request.id, result: {
+        kind: dataset.kind, scanned: ruleIndex, indexed: dataset.total,
         total: total, category_total: list.length, truncated: list.length > MAX_GROUPS,
         skipped_regex: invalidRegex, categories: list.slice(0, MAX_GROUPS)
     } });
@@ -415,6 +416,8 @@ self.onmessage = async function(event) {
             } });
         } else {
             if (!dataset) bad('GeoData has not been loaded');
+            if (req.kind !== dataset.kind)
+                bad('GeoData dataset mismatch; reload the selected file');
             if (req.action === 'browse') await browse(req, token);
             else if (req.action === 'search') await search(req, token);
             else bad('Unsupported GeoData operation');
