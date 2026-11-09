@@ -14,6 +14,8 @@ var callFileInfo = rpc.declare({
 
 var CACHE_NAME = 'nftflow-geodata';
 var PAGE_SIZE = 100;
+var DATA_CACHE_VERSION = 2;
+var WORKER_REVISION = '2';
 
 function check(value) {
     return nftflowUi.requireOk(value, _('Unable to read GeoData file information.'));
@@ -56,7 +58,7 @@ function cacheOperation(key, value) {
 }
 
 function cacheMatches(entry, info) {
-    return entry && entry.version === 1 && entry.kind === info.kind &&
+    return entry && entry.version === DATA_CACHE_VERSION && entry.kind === info.kind &&
         entry.source === info.source && entry.size === info.size &&
         entry.mtime === info.mtime && entry.ctime === info.ctime &&
         entry.blob instanceof Blob && entry.blob.size === info.size;
@@ -348,8 +350,20 @@ return view.extend({
                 ]));
             });
 
-            if (!result.categories || !result.categories.length)
-                nodes.push(E('p', {}, _('No matching rules found.')));
+            if (!result.categories || !result.categories.length) {
+                nodes.push(E('p', {}, _('No matching rules found in the current DAT file.')));
+                if (mode === 'match' && kind === 'geosite') {
+                    var textSearchButton = actionButton(_('Search rule text'), false);
+                    textSearchButton.onclick = function() {
+                        searchMode.value = 'text';
+                        updateModes();
+                        search();
+                    };
+                    nodes.push(E('p', { 'class': 'cbi-section-descr' },
+                        _('Text search can find rule contents even when they do not match the requested domain.')));
+                    nodes.push(textSearchButton);
+                }
+            }
 
             output.replaceChildren.apply(output, nodes);
         }
@@ -364,6 +378,7 @@ return view.extend({
             output.replaceChildren(E('p', {}, _('Loading category rules...')));
             setStatus('notice', _('Reading rules in browser...'));
             return send('browse', {
+                kind: dataset.value,
                 category: selected, page: currentPage, filter: entryFilter.value.trim(),
                 type: entryType.value
             }).then(function(data) {
@@ -399,7 +414,7 @@ return view.extend({
             setStatus('notice', _('Searching in browser... 0%'));
 
             return send('search', {
-                query: query.value.trim(), mode: mode,
+                kind: kind, query: query.value.trim(), mode: mode,
                 regex: regex.checked, sensitive: sensitive.checked
             }, null, function(progress) {
                 if (turn !== revision) return;
@@ -407,6 +422,8 @@ return view.extend({
                 setStatus('notice', _('Searching in browser... %s%%').format(value));
             }).then(function(data) {
                 if (turn !== revision) return;
+                if (data.result.kind !== kind || data.result.scanned !== data.result.indexed)
+                    throw new Error(_('GeoData search did not scan the selected dataset completely. Reload the file.'));
                 showSearch(data.result, kind, mode);
                 setStatus('ok', '');
             }).catch(function(error) {
@@ -458,7 +475,7 @@ return view.extend({
                         throw new Error(_('GeoData file changed during transfer. Reload the file.'));
                     // Browser-only storage; the router never builds a search index.
                     cacheOperation(kind, {
-                        version: 1, kind: kind, source: info.source,
+                        version: DATA_CACHE_VERSION, kind: kind, source: info.source,
                         size: info.size, mtime: info.mtime, ctime: info.ctime,
                         blob: blob
                     });
@@ -486,7 +503,7 @@ return view.extend({
         }
 
         try {
-            worker = new Worker(L.resource('nftflow/geodata-worker.js'));
+            worker = new Worker(L.resource('nftflow/geodata-worker.js') + '?v=' + WORKER_REVISION);
             worker.onmessage = function(event) {
                 var message = event.data || {};
                 var request = pending[message.id];
