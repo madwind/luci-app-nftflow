@@ -12,6 +12,8 @@ const MAX_ENTRY_SIZE = 32 * 1024 * 1024;
 const PAGE_SIZE = 100;
 const PREVIEW_SIZE = 8;
 const MAX_RESULT_GROUPS = 80;
+const SEARCH_BATCH_ENTRIES = 5000;
+const INDEX_DIRECTORY = '/tmp/nftflow-geodata';
 
 function source_info(kind) {
     if (kind != 'geosite' && kind != 'geoip') die('unsupported GeoData type');
@@ -49,7 +51,7 @@ function string_reader(raw) {
     };
 }
 
-function field(reader, end) {
+function field(reader, end, skip_entry) {
     let key = varint(reader), wire = key % 8, number = int(key / 8), value;
     if (number < 1) die('invalid GeoData protobuf field');
     if (wire == 0) value = varint(reader);
@@ -58,9 +60,14 @@ function field(reader, end) {
         let position = reader.pos ?? reader.tell();
         if (count < 0 || count > end - position || count > MAX_ENTRY_SIZE)
             die('invalid or oversized GeoData protobuf field');
-        value = reader.read(count);
-        if (value == null || length(value) != count)
-            die('truncated GeoData protobuf field');
+        if (skip_entry && reader.raw != null && number == 2) {
+            reader.pos += count;
+            value = null;
+        } else {
+            value = reader.read(count);
+            if (value == null || length(value) != count)
+                die('truncated GeoData protobuf field');
+        }
     }
     return { number, wire, value };
 }
@@ -83,13 +90,75 @@ function scan(source, visit) {
 function metadata(raw) {
     let reader = string_reader(raw), tag = null, count = 0, inverse = false;
     while (reader.pos < length(raw)) {
-        let item = field(reader, length(raw));
+        let item = field(reader, length(raw), true);
         if (item.number == 1 && item.wire == 2) tag = lc(item.value);
         else if (item.number == 2 && item.wire == 2) count++;
         else if (item.number == 3 && item.wire == 0) inverse = item.value != 0;
     }
     if (!tag) die('GeoData entry has no category name');
     return { tag, count, inverse };
+}
+
+
+function load_index(source) {
+    let path = INDEX_DIRECTORY + '/' + source.kind + '.json';
+    let cached;
+    try { cached = json(fs.readfile(path, 2 * 1024 * 1024) || ''); }
+    catch (e) {}
+    if (cached && cached.version == 1 && cached.path == source.path &&
+        cached.size == source.size && cached.mtime == source.mtime &&
+        type(cached.categories) == 'array' && type(cached.groups) == 'array')
+        return cached;
+
+    let groups = [], category_map = {}, file = fs.open(source.path, 'r');
+    if (!file) die('cannot open GeoData file: ' + source.path);
+    try {
+        while (file.tell() < source.size) {
+            let offset = file.tell(), item = field(file, source.size);
+            if (item.number != 1 || item.wire != 2) continue;
+            let meta = metadata(item.value);
+            push(groups, { name: meta.tag, offset, count: meta.count, inverse: meta.inverse });
+            let category = category_map[meta.tag];
+            if (!category) {
+                category = { name: meta.tag, count: 0, inverse: false };
+                category_map[meta.tag] = category;
+            }
+            category.count += meta.count;
+            category.inverse = category.inverse || meta.inverse;
+        }
+    } catch (e) {
+        file.close();
+        die('failed to index ' + source.kind + ': ' + e);
+    }
+    file.close();
+    let after = fs.stat(source.path);
+    if (!after || after.size != source.size || after.mtime != source.mtime)
+        die('GeoData source changed during indexing; retry');
+
+    let categories = [];
+    for (let tag in sort(keys(category_map))) push(categories, category_map[tag]);
+    let built = {
+        version: 1, path: source.path, size: source.size, mtime: source.mtime,
+        groups, categories
+    };
+    if (fs.stat(INDEX_DIRECTORY) == null && fs.mkdir(INDEX_DIRECTORY, 0o700) !== true)
+        return built; // Read-only mode still works without a writable cache.
+    let temp = fs.mkdtemp(INDEX_DIRECTORY + '/build-XXXXXX');
+    if (temp) {
+        let payload = sprintf('%J\n', built), staged = temp + '/index.json';
+        if (fs.writefile(staged, payload) == length(payload)) fs.rename(staged, path);
+        fs.unlink(staged);
+        fs.rmdir(temp);
+    }
+    return built;
+}
+
+function read_group(file, group, size) {
+    if (file.seek(group.offset) !== true) die('unable to seek GeoData category');
+    let item = field(file, size);
+    if (item.number != 1 || item.wire != 2)
+        die('invalid GeoData category offset');
+    return item.value;
 }
 
 function visit_entries(raw, visitor) {
@@ -182,21 +251,13 @@ function domain_matches(entry, name) {
 }
 
 function list_categories(kind) {
-    let source = source_info(kind), counts = {}, inverses = {};
-    scan(source, function(raw) {
-        let meta = metadata(raw);
-        counts[meta.tag] = (counts[meta.tag] || 0) + meta.count;
-        if (meta.inverse) inverses[meta.tag] = true;
-    });
-    let categories = [];
-    for (let tag in sort(keys(counts)))
-        push(categories, { name: tag, count: counts[tag], inverse: !!inverses[tag] });
+    let source = source_info(kind), indexed = load_index(source);
     return { ok: true, kind, path: source.path, size: source.size,
-             mtime: source.mtime, categories };
+             mtime: source.mtime, categories: indexed.categories };
 }
 
 function browse(kind, tag, page_arg, filter_arg, type_arg) {
-    let source = source_info(kind);
+    let source = source_info(kind), indexed = load_index(source);
     tag = lc(trim('' + (tag ?? '')));
     if (!tag || length(tag) > 128) die('invalid category');
     let page = int(page_arg || '0');
@@ -208,23 +269,33 @@ function browse(kind, tag, page_arg, filter_arg, type_arg) {
         index('|keyword|regexp|domain|full|cidr|', '|' + type_filter + '|') < 0)
         die('invalid entry type filter');
 
-    let found = false, inverse = false, total = 0, entries = [];
-    let offset = page * PAGE_SIZE;
-    scan(source, function(raw) {
-        let meta = metadata(raw);
-        if (meta.tag != tag) return;
-        found = true;
-        inverse = inverse || meta.inverse;
-        visit_entries(raw, function(data) {
-            let entry = parse_entry(kind, data);
-            if (type_filter && type_filter != 'all' && entry.type != type_filter) return;
-            if (filter && !text_match(entry.value, filter, null, false)) return;
-            if (total >= offset && length(entries) < PAGE_SIZE) push(entries, public_entry(entry));
-            total++;
-        });
-    });
-    if (!found) die('category not found: ' + tag);
-    return { ok: true, kind, category: tag, inverse, total, page,
+    let category = null;
+    for (let item in indexed.categories)
+        if (item.name == tag) { category = item; break; }
+    if (!category) die('category not found: ' + tag);
+
+    let offset = page * PAGE_SIZE, count = 0, entries = [], filtered = !!filter ||
+        (type_filter && type_filter != 'all');
+    let file = fs.open(source.path, 'r');
+    if (!file) die('cannot open GeoData file: ' + source.path);
+    try {
+        for (let group in indexed.groups) {
+            if (group.name != tag) continue;
+            // Search terms absent from the raw category cannot match any entry.
+            let raw = read_group(file, group, source.size);
+            if (filter && index(lc(raw), lc(filter)) < 0) continue;
+            visit_entries(raw, function(data) {
+                let entry = parse_entry(kind, data);
+                if (type_filter && type_filter != 'all' && entry.type != type_filter) return;
+                if (filter && !text_match(entry.value, filter, null, false)) return;
+                if (count >= offset && length(entries) < PAGE_SIZE) push(entries, public_entry(entry));
+                count++;
+            });
+        }
+    } catch (e) { file.close(); die('cannot browse GeoData: ' + e); }
+    file.close();
+    return { ok: true, kind, category: tag, inverse: category.inverse,
+             total: filtered ? count : category.count, page,
              page_size: PAGE_SIZE, entries };
 }
 
