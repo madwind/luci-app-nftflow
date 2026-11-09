@@ -53,14 +53,19 @@ function file_info(kind) {
         if (!staging)
             die('cannot prepare GeoData download alias');
         let temporary = staging + '/file';
+        let error = null;
         try {
             if (fs.symlink(path, temporary) !== true ||
                 fs.rename(temporary, alias) !== true)
-                die('cannot publish GeoData download alias');
-        } finally {
-            fs.unlink(temporary);
-            fs.rmdir(staging);
+                error = 'cannot publish GeoData download alias';
+        } catch (e) {
+            error = 'cannot publish GeoData download alias: ' + e;
         }
+        // ucode requires catch after try; keep cleanup outside the block.
+        fs.unlink(temporary);
+        fs.rmdir(staging);
+        if (error)
+            die(error);
     }
 
     return {
