@@ -97,6 +97,7 @@ return view.extend({
         var state = E('div', { 'aria-live': 'polite' });
         var categories = [];
         var selected = null, page = 0, total = 0, pending = 0;
+        var visibleCategoryCount = 160;
 
         var controls = E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:.65rem; align-items:end;' }, [
             field(_('Dataset'), kind),
@@ -132,7 +133,7 @@ return view.extend({
             var filtered = categories.filter(function(category) {
                 return category.name.indexOf(filter) >= 0;
             });
-            var visible = filtered.slice(0, 160);
+            var visible = filtered.slice(0, visibleCategoryCount);
             var nodes = visible.map(function(category) {
                 var active = selected === category.name;
                 var item = button(category.name + ' (' + category.count + ')' +
@@ -153,10 +154,17 @@ return view.extend({
             });
             if (!filtered.length)
                 nodes.push(E('div', {}, _('No categories found.')));
-            else if (filtered.length > visible.length)
+            else if (filtered.length > visible.length) {
+                var more = button(_('Show more categories'), false);
+                more.style.width = '100%';
+                more.onclick = function() {
+                    visibleCategoryCount += 160;
+                    renderCategories();
+                };
+                nodes.push(more);
                 nodes.push(E('p', { 'style': 'opacity:.7; margin:.5rem 0;' },
-                    _('Showing first %s of %s categories. Use the filter to narrow results.').format(
-                        visible.length, filtered.length)));
+                    _('%s of %s categories shown').format(visible.length, filtered.length)));
+            }
             categoryList.replaceChildren.apply(categoryList, nodes);
         }
         function browse() {
@@ -309,6 +317,7 @@ return view.extend({
             cancelButton.hidden = true;
             selected = null;
             categories = [];
+            visibleCategoryCount = 160;
             page = 0;
             previous.disabled = true;
             next.disabled = true;
@@ -350,7 +359,7 @@ return view.extend({
             nftflowUi.setState(state, 'notice', _('Search cancelled. Partial results are displayed.'));
         };
         query.onkeydown = function(event) { if (event.key === 'Enter') runSearch(); };
-        categoryFilter.oninput = renderCategories;
+        categoryFilter.oninput = function() { visibleCategoryCount = 160; renderCategories(); };
         ruleFilter.onkeydown = function(event) {
             if (event.key === 'Enter') { page = 0; browse(); }
         };
