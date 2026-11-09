@@ -205,14 +205,13 @@ return view.extend({
                 ];
                 if (!finished)
                     nodes.push(E('p', { 'style': 'opacity:.7;' },
-                        _('Searching... %s%').format(percent)));
+                        _('Searching... %s%%').format(percent)));
                 if (categoryCount > groups.length)
                     nodes.push(E('p', { 'class': 'warning' },
                         _('Showing only the first 80 matching categories.')));
-                if (skippedRegex)
-                    nodes.push(E('p', {},
-                        _('%s regex rules were not evaluated for domain matching.').format(
-                            skippedRegex)));
+                if (kind.value === 'geosite' && mode.value === 'match')
+                    nodes.push(E('p', { 'style': 'opacity:.75;' },
+                        _('GeoSite regexp rules are not evaluated in match mode.')));
 
                 groups.forEach(function(group) {
                     nodes.push(E('h4', { 'style': 'margin-bottom:.3rem;' },
@@ -286,7 +285,7 @@ return view.extend({
                     if (next.group === cursor.group && next.position === cursor.position)
                         throw new Error(_('GeoData search did not advance.'));
                     cursor = next;
-                    busy(_('Searching... %s%').format(percent));
+                    busy(_('Searching... %s%%').format(percent));
                     renderProgress();
                     return searchNext();
                 });
