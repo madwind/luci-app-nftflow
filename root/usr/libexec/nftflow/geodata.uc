@@ -72,21 +72,6 @@ function field(reader, end, skip_entry) {
     return { number, wire, value };
 }
 
-function scan(source, visit) {
-    let file = fs.open(source.path, 'r');
-    if (!file) die('cannot open GeoData file: ' + source.path);
-    try {
-        while (file.tell() < source.size) {
-            let item = field(file, source.size);
-            if (item.number == 1 && item.wire == 2) visit(item.value);
-        }
-    } catch (e) {
-        file.close();
-        die('failed to read ' + source.kind + ': ' + e);
-    }
-    file.close();
-}
-
 function metadata(raw) {
     let reader = string_reader(raw), tag = null, count = 0, inverse = false;
     while (reader.pos < length(raw)) {
@@ -165,7 +150,7 @@ function visit_entries(raw, visitor) {
     let reader = string_reader(raw);
     while (reader.pos < length(raw)) {
         let item = field(reader, length(raw));
-        if (item.number == 2 && item.wire == 2) visitor(item.value);
+        if (item.number == 2 && item.wire == 2 && visitor(item.value) === true) return;
     }
 }
 
@@ -281,15 +266,18 @@ function browse(kind, tag, page_arg, filter_arg, type_arg) {
     try {
         for (let group in indexed.groups) {
             if (group.name != tag) continue;
+            if (!filtered && length(entries) >= PAGE_SIZE) break;
             // Search terms absent from the raw category cannot match any entry.
             let raw = read_group(file, group, source.size);
             if (filter && index(lc(raw), lc(filter)) < 0) continue;
             visit_entries(raw, function(data) {
+                if (!filtered && count >= offset + PAGE_SIZE) return true;
                 let entry = parse_entry(kind, data);
                 if (type_filter && type_filter != 'all' && entry.type != type_filter) return;
                 if (filter && !text_match(entry.value, filter, null, false)) return;
                 if (count >= offset && length(entries) < PAGE_SIZE) push(entries, public_entry(entry));
                 count++;
+                if (!filtered && count >= offset + PAGE_SIZE) return true;
             });
         }
     } catch (e) { file.close(); die('cannot browse GeoData: ' + e); }
