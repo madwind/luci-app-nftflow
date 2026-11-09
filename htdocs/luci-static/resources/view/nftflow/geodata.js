@@ -16,7 +16,7 @@ var callBrowse = rpc.declare({
 });
 var callSearch = rpc.declare({
     object: 'luci.nftflow', method: 'geodata_search',
-    params: [ 'kind', 'query', 'mode', 'regex', 'sensitive' ],
+    params: [ 'kind', 'query', 'mode', 'regex', 'sensitive', 'group', 'position', 'within' ],
     expect: { '': {} }, reject: true
 });
 
@@ -73,6 +73,8 @@ return view.extend({
         var regex = E('input', { 'type': 'checkbox' });
         var sensitive = E('input', { 'type': 'checkbox' });
         var searchButton = button(_('Search'), true);
+        var cancelButton = button(_('Cancel'), false);
+        cancelButton.hidden = true;
         var categoryFilter = E('input', {
             'type': 'search', 'class': 'cbi-input-text',
             'placeholder': _('Filter categories'), 'style': 'width:100%; box-sizing:border-box;'
@@ -102,7 +104,7 @@ return view.extend({
             field(_('Query'), query),
             field(_('Regex'), regex),
             field(_('Case sensitive'), sensitive),
-            searchButton
+            searchButton, cancelButton
         ]);
 
         var ruleControls = E('div', {
@@ -130,30 +132,39 @@ return view.extend({
             var filtered = categories.filter(function(category) {
                 return category.name.indexOf(filter) >= 0;
             });
-            categoryList.replaceChildren.apply(categoryList, filtered.length
-                ? filtered.map(function(category) {
-                    var active = selected === category.name;
-                    var item = button(category.name + ' (' + category.count + ')' +
-                        (category.inverse ? ' [inverse]' : ''), active);
-                    item.style.display = 'block';
-                    item.style.width = '100%';
-                    item.style.textAlign = 'left';
-                    item.style.margin = '.18rem 0';
-                    item.onclick = function() {
-                        selected = category.name;
-                        page = 0;
-                        ruleFilter.value = '';
-                        ruleType.value = 'all';
-                        renderCategories();
-                        browse();
-                    };
-                    return item;
-                })
-                : [ E('div', {}, _('No categories found.')) ]);
+            var visible = filtered.slice(0, 160);
+            var nodes = visible.map(function(category) {
+                var active = selected === category.name;
+                var item = button(category.name + ' (' + category.count + ')' +
+                    (category.inverse ? ' [inverse]' : ''), active);
+                item.style.display = 'block';
+                item.style.width = '100%';
+                item.style.textAlign = 'left';
+                item.style.margin = '.18rem 0';
+                item.onclick = function() {
+                    selected = category.name;
+                    page = 0;
+                    ruleFilter.value = '';
+                    ruleType.value = 'all';
+                    renderCategories();
+                    browse();
+                };
+                return item;
+            });
+            if (!filtered.length)
+                nodes.push(E('div', {}, _('No categories found.')));
+            else if (filtered.length > visible.length)
+                nodes.push(E('p', { 'style': 'opacity:.7; margin:.5rem 0;' },
+                    _('Showing first %s of %s categories. Use the filter to narrow results.').format(
+                        visible.length, filtered.length)));
+            categoryList.replaceChildren.apply(categoryList, nodes);
         }
         function browse() {
             if (!selected) return Promise.resolve();
             var id = ++pending;
+            searchButton.disabled = false;
+            cancelButton.hidden = true;
+            ruleControls.hidden = false;
             busy(_('Loading rules...'));
             title.textContent = kind.value.toUpperCase() + ' / ' + selected;
             return callBrowse(kind.value, selected, String(page),
@@ -171,52 +182,136 @@ return view.extend({
             }).catch(function(error) { if (id === pending) showError(error); });
         }
         function runSearch() {
-            if (!query.value.trim()) return;
+            var input = query.value.trim();
+            if (!input) return;
+
             var id = ++pending;
-            busy(_('Searching data file...'));
+            var cursor = { group: '0', position: '0', within: '0' };
+            var groups = [], byName = Object.create(null), allNames = Object.create(null);
+            var totalMatches = 0, categoryCount = 0, skippedRegex = 0;
+            var finished = false, percent = 0;
+
             selected = null;
             renderCategories();
             title.textContent = _('Global search');
             ruleControls.hidden = true;
-            return callSearch(kind.value, query.value.trim(), mode.value,
-                regex.checked ? '1' : '0', sensitive.checked ? '1' : '0').then(check).then(function(result) {
-                if (id !== pending) return;
-                var groups = Array.isArray(result.categories) ? result.categories : [];
+            body.replaceChildren(E('p', {}, _('Searching the GeoData file...')));
+            searchButton.disabled = true;
+            cancelButton.hidden = false;
+
+            function renderProgress() {
                 var nodes = [
-                    E('p', {}, _('%s matching rules in %s categories').format(
-                        result.total || 0, result.category_total || 0))
+                    E('p', {}, _('%s matching rules in %s categories').format(totalMatches, categoryCount))
                 ];
-                if (result.truncated)
-                    nodes.push(E('p', { 'class': 'warning' }, _('Showing only the first 80 categories.')));
-                if (result.skipped_regex)
-                    nodes.push(E('p', {}, _('%s regex rules were not evaluated for domain matching.').format(
-                        result.skipped_regex)));
+                if (!finished)
+                    nodes.push(E('p', { 'style': 'opacity:.7;' },
+                        _('Searching... %s%').format(percent)));
+                if (categoryCount > groups.length)
+                    nodes.push(E('p', { 'class': 'warning' },
+                        _('Showing only the first 80 matching categories.')));
+                if (skippedRegex)
+                    nodes.push(E('p', {},
+                        _('%s regex rules were not evaluated for domain matching.').format(
+                            skippedRegex)));
+
                 groups.forEach(function(group) {
-                    var heading = E('h4', { 'style': 'margin-bottom:.3rem;' },
-                        group.name + ' (' + group.total + ')' + (group.inverse ? ' [inverse]' : ''));
-                    nodes.push(heading, resultsTable(group.matches));
+                    nodes.push(E('h4', { 'style': 'margin-bottom:.3rem;' },
+                        group.name + ' (' + group.total + ')' +
+                        (group.inverse ? ' [inverse]' : '')));
+                    nodes.push(resultsTable(group.matches));
                     var open = button(_('Browse category'), false);
                     open.style.marginBottom = '.8rem';
                     open.onclick = function() {
                         selected = group.name;
-                        ruleControls.hidden = false;
+                        page = 0;
                         ruleFilter.value = '';
                         ruleType.value = 'all';
-                        page = 0;
                         renderCategories();
                         browse();
                     };
                     nodes.push(open);
                 });
-                if (!groups.length) nodes.push(E('div', {}, _('No matches found.')));
+                if (finished && !groups.length)
+                    nodes.push(E('p', {}, _('No matches found.')));
                 body.replaceChildren.apply(body, nodes);
+            }
+
+            function finish() {
+                if (id !== pending) return;
+                finished = true;
+                searchButton.disabled = false;
+                cancelButton.hidden = true;
+                renderProgress();
                 nftflowUi.setState(state, 'ok', '');
-            }).catch(function(error) { if (id === pending) showError(error); });
+            }
+
+            function searchNext() {
+                if (id !== pending) return Promise.resolve();
+                return callSearch(kind.value, input, mode.value,
+                    regex.checked ? '1' : '0', sensitive.checked ? '1' : '0',
+                    cursor.group, cursor.position, cursor.within).then(check).then(function(result) {
+                    if (id !== pending) return;
+
+                    totalMatches += result.total || 0;
+                    skippedRegex += result.skipped_regex || 0;
+                    (result.categories || []).forEach(function(item) {
+                        if (!allNames[item.name]) {
+                            allNames[item.name] = true;
+                            categoryCount++;
+                        }
+                        var group = byName[item.name];
+                        if (!group && groups.length < 80) {
+                            group = { name: item.name, total: 0, inverse: !!item.inverse, matches: [] };
+                            groups.push(group);
+                            byName[item.name] = group;
+                        }
+                        if (!group) return;
+                        group.total += item.total || 0;
+                        (item.matches || []).forEach(function(entry) {
+                            if (group.matches.length < 8) group.matches.push(entry);
+                        });
+                    });
+
+                    percent = Math.min(100, Math.floor((result.progress || 0) * 100));
+                    if (result.done === true) {
+                        finish();
+                        return;
+                    }
+
+                    var next = {
+                        group: String(result.next_group),
+                        position: String(result.next_position),
+                        within: String(result.next_within || '0')
+                    };
+                    if (next.group === cursor.group && next.position === cursor.position)
+                        throw new Error(_('GeoData search did not advance.'));
+                    cursor = next;
+                    busy(_('Searching... %s%').format(percent));
+                    renderProgress();
+                    return searchNext();
+                });
+            }
+
+            busy(_('Searching... 0%'));
+            return searchNext().catch(function(error) {
+                if (id !== pending) return;
+                searchButton.disabled = false;
+                cancelButton.hidden = true;
+                body.replaceChildren(E('p', { 'class': 'error' },
+                    _('Search failed. Previous category results were cleared.')));
+                showError(error);
+            });
         }
         function loadCategories() {
             var id = ++pending;
+            searchButton.disabled = false;
+            cancelButton.hidden = true;
             selected = null;
             categories = [];
+            page = 0;
+            previous.disabled = true;
+            next.disabled = true;
+            pageInfo.textContent = '';
             body.replaceChildren(_('Select a category to view its rules.'));
             ruleControls.hidden = false;
             title.textContent = _('Rules');
@@ -240,11 +335,19 @@ return view.extend({
 
         function updateMode() {
             regex.disabled = mode.value !== 'text';
+            sensitive.disabled = mode.value !== 'text';
             if (regex.disabled) regex.checked = false;
+            if (sensitive.disabled) sensitive.checked = false;
         }
         mode.onchange = updateMode;
         kind.onchange = function() { loadCategories(); };
         searchButton.onclick = runSearch;
+        cancelButton.onclick = function() {
+            ++pending;
+            searchButton.disabled = false;
+            cancelButton.hidden = true;
+            nftflowUi.setState(state, 'notice', _('Search cancelled. Partial results are displayed.'));
+        };
         query.onkeydown = function(event) { if (event.key === 'Enter') runSearch(); };
         categoryFilter.oninput = renderCategories;
         ruleFilter.onkeydown = function(event) {
