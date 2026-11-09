@@ -1,380 +1,489 @@
 'use strict';
 'require view';
 'require rpc';
-'require uci';
+'require fs';
 'require ui';
 'require nftflow.ui as nftflowUi';
 
-var callList = rpc.declare({
-    object: 'luci.nftflow', method: 'geodata_list', params: [ 'kind' ],
-    expect: { '': {} }, reject: true
-});
-var callBrowse = rpc.declare({
-    object: 'luci.nftflow', method: 'geodata_browse',
-    params: [ 'kind', 'category', 'page', 'filter', 'entry_type' ],
-    expect: { '': {} }, reject: true
-});
-var callSearch = rpc.declare({
-    object: 'luci.nftflow', method: 'geodata_search',
-    params: [ 'kind', 'query', 'mode', 'regex', 'sensitive', 'group', 'position', 'within' ],
-    expect: { '': {} }, reject: true
+var callFileInfo = rpc.declare({
+    object: 'luci.nftflow',
+    method: 'geodata_info',
+    params: [ 'kind' ],
+    expect: { '': {} },
+    reject: true
 });
 
-function field(label, node) {
-    return E('label', { 'style': 'display:flex; flex-direction:column; gap:.3rem; min-width:0;' }, [
-        E('span', { 'style': 'font-size:.9em;' }, label), node
-    ]);
+var CACHE_NAME = 'nftflow-geodata';
+var PAGE_SIZE = 100;
+
+function check(value) {
+    return nftflowUi.requireOk(value, _('Unable to read GeoData file information.'));
 }
-function choose(values) {
+
+function cacheOperation(key, value) {
+    if (typeof indexedDB === 'undefined')
+        return Promise.resolve(null);
+
+    return new Promise(function(resolve) {
+        var completed = false;
+        function done(value) {
+            if (!completed) { completed = true; resolve(value); }
+        }
+        var open;
+        try { open = indexedDB.open(CACHE_NAME, 1); }
+        catch (error) { done(null); return; }
+
+        open.onupgradeneeded = function() {
+            if (!open.result.objectStoreNames.contains('files'))
+                open.result.createObjectStore('files');
+        };
+        open.onerror = function() { done(null); };
+        open.onblocked = function() { done(null); };
+        open.onsuccess = function() {
+            var db = open.result, transaction, request;
+            try {
+                transaction = db.transaction('files', value == null ? 'readonly' : 'readwrite');
+                request = value == null
+                    ? transaction.objectStore('files').get(key)
+                    : transaction.objectStore('files').put(value, key);
+                request.onsuccess = function() { done(value == null ? request.result : true); };
+                request.onerror = function() { done(null); };
+                transaction.oncomplete = function() { db.close(); };
+                transaction.onerror = function() { db.close(); done(null); };
+                transaction.onabort = function() { db.close(); done(null); };
+            } catch (error) { db.close(); done(null); }
+        };
+    });
+}
+
+function cacheMatches(entry, info) {
+    return entry && entry.version === 1 && entry.kind === info.kind &&
+        entry.source === info.source && entry.size === info.size &&
+        entry.mtime === info.mtime && entry.ctime === info.ctime &&
+        entry.blob instanceof Blob && entry.blob.size === info.size;
+}
+
+function actionButton(label, emphasized) {
+    return E('button', {
+        'type': 'button',
+        'class': 'btn cbi-button cbi-button-' + (emphasized ? 'action' : 'neutral')
+    }, label);
+}
+
+function dropdown(items) {
     return E('select', { 'class': 'cbi-input-select' },
-        values.map(function(v) { return E('option', { value: v[0] }, v[1]); }));
+        items.map(function(item) { return E('option', { value: item[0] }, item[1]); }));
 }
-function button(text, action) {
-    return E('button', { 'type': 'button', 'class': 'btn cbi-button cbi-button-' + (action ? 'action' : 'neutral') }, text);
+
+function labeled(label, node) {
+    return E('label', { 'style': 'display:flex; flex-direction:column; gap:.25rem; min-width:0;' },
+        [ E('span', { 'style': 'font-size:.9em;' }, label), node ]);
 }
-function entryRow(entry) {
-    var attrs = Array.isArray(entry.attributes) ? entry.attributes : [];
-    return E('tr', {}, [
-        E('td', {}, E('code', {}, entry.type || '')),
-        E('td', { 'style': 'overflow-wrap:anywhere;' }, E('code', {}, entry.value || '')),
-        E('td', { 'style': 'overflow-wrap:anywhere;' }, attrs.join(', ') || '\u2014')
-    ]);
-}
-function resultsTable(entries) {
+
+function resultTable(entries) {
     return E('div', { 'style': 'overflow-x:auto;' }, E('table', {
         'class': 'table', 'style': 'width:100%;'
     }, [
         E('thead', {}, E('tr', {}, [
-            E('th', {}, _('Type')), E('th', {}, _('Value')), E('th', {}, _('Attributes'))
+            E('th', {}, _('Type')),
+            E('th', {}, _('Value')),
+            E('th', {}, _('Attributes'))
         ])),
-        E('tbody', {}, (entries || []).length
-            ? entries.map(entryRow)
-            : [ E('tr', {}, E('td', { colspan: 3 }, _('No matching entries.'))) ])
+        E('tbody', {}, (entries && entries.length ? entries : []).map(function(e) {
+            return E('tr', {}, [
+                E('td', {}, E('code', {}, e.type)),
+                E('td', { 'style': 'overflow-wrap:anywhere;' }, E('code', {}, e.value)),
+                E('td', { 'style': 'overflow-wrap:anywhere;' }, (e.attributes || []).join(', ') || '\u2014')
+            ]);
+        }))
     ]));
 }
-function check(result) { return nftflowUi.requireOk(result, _('GeoData request failed.')); }
 
 return view.extend({
     handleSave: null,
     handleSaveApply: null,
     handleReset: null,
 
-    load: function() { return uci.load('nftflow'); },
-
     render: function() {
         document.title = _('NftFlow | GeoData');
 
-        var kind = choose([ [ 'geosite', 'GeoSite' ], [ 'geoip', 'GeoIP' ] ]);
+        var dataset = dropdown([ [ 'geosite', 'GeoSite' ], [ 'geoip', 'GeoIP' ] ]);
+        var searchMode = dropdown([
+            [ 'match', _('Match rules') ], [ 'text', _('Search text') ]
+        ]);
         var query = E('input', {
-            'type': 'search', 'class': 'cbi-input-text', 'style': 'min-width:12rem; flex:1;',
-            'placeholder': 'www.youtube.com', 'autocomplete': 'off', 'spellcheck': 'false'
+            'type': 'search', 'class': 'cbi-input-text',
+            'placeholder': 'www.youtube.com', 'spellcheck': 'false',
+            'autocomplete': 'off', 'style': 'min-width:12rem; flex:1;'
         });
-        var mode = choose([ [ 'match', _('Match rules') ], [ 'text', _('Search text') ] ]);
         var regex = E('input', { 'type': 'checkbox' });
         var sensitive = E('input', { 'type': 'checkbox' });
-        var searchButton = button(_('Search'), true);
-        var cancelButton = button(_('Cancel'), false);
-        cancelButton.hidden = true;
+        var searchButton = actionButton(_('Search'), true);
+        var cancelButton = actionButton(_('Cancel'), false);
+        var reloadButton = actionButton(_('Reload file'), false);
         var categoryFilter = E('input', {
             'type': 'search', 'class': 'cbi-input-text',
-            'placeholder': _('Filter categories'), 'style': 'width:100%; box-sizing:border-box;'
+            'placeholder': _('Filter categories'), 'style': 'width:100%;box-sizing:border-box;'
         });
-        var categoryList = E('div', { 'style': 'max-height:32rem; overflow-y:auto;' });
-        var ruleFilter = E('input', {
+        var categoryList = E('div', { 'style': 'max-height:32rem;overflow-y:auto;' });
+        var entryFilter = E('input', {
             'type': 'search', 'class': 'cbi-input-text', 'placeholder': _('Filter entries'),
-            'style': 'min-width:8rem; flex:1;'
+            'style': 'min-width:8rem;flex:1;'
         });
-        var ruleType = choose([
-            [ 'all', _('All types') ], [ 'domain', 'domain' ], [ 'full', 'full' ],
-            [ 'keyword', 'keyword' ], [ 'regexp', 'regexp' ], [ 'cidr', 'cidr' ]
-        ]);
-        var previous = button(_('Previous'), false);
-        var next = button(_('Next'), false);
-        var body = E('div', {}, _('Select a category to view its rules.'));
+        var entryType = dropdown([ [ 'all', _('All types') ] ]);
+        var previous = actionButton(_('Previous'), false);
+        var next = actionButton(_('Next'), false);
         var pageInfo = E('span', { 'style': 'opacity:.75;' });
         var title = E('h3', { 'style': 'margin:.2rem 0;' }, _('Rules'));
-        var fileInfo = E('div', { 'style': 'opacity:.75; overflow-wrap:anywhere;' });
+        var output = E('div', {}, _('Select a category to view its rules.'));
         var state = E('div', { 'aria-live': 'polite' });
-        var categories = [];
-        var selected = null, page = 0, total = 0, pending = 0;
-        var visibleCategoryCount = 160;
+        var fileInfo = E('div', { 'style': 'opacity:.75;overflow-wrap:anywhere;margin-top:.35rem;' });
+        var browseControls = E('div', {
+            'style': 'display:flex; flex-wrap:wrap;gap:.5rem;align-items:center;margin:.6rem 0;'
+        }, [ entryFilter, entryType, previous, pageInfo, next ]);
 
-        var controls = E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:.65rem; align-items:end;' }, [
-            field(_('Dataset'), kind),
-            field(_('Mode'), mode),
-            field(_('Query'), query),
-            field(_('Regex'), regex),
-            field(_('Case sensitive'), sensitive),
-            searchButton, cancelButton
+        var controls = E('div', {
+            'style': 'display:flex;flex-wrap:wrap;gap:.7rem;align-items:end;'
+        }, [
+            labeled(_('Dataset'), dataset),
+            labeled(_('Mode'), searchMode),
+            labeled(_('Query'), query),
+            E('label', {}, [ regex, ' ', _('Regex') ]),
+            E('label', {}, [ sensitive, ' ', _('Case sensitive') ]),
+            searchButton, cancelButton, reloadButton
         ]);
 
-        var ruleControls = E('div', {
-            'style': 'display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; margin:.6rem 0;'
-        }, [ ruleFilter, ruleType, previous, pageInfo, next ]);
-
-        var main = E('div', { 'style': 'display:flex; flex-wrap:wrap; gap:1rem; align-items:stretch;' }, [
-            E('section', { 'class': 'cbi-section', 'style': 'flex:1 1 14rem; min-width:0; max-width:100%;' }, [
+        var layout = E('div', {
+            'style': 'display:flex;flex-wrap:wrap;gap:1rem;align-items:stretch;'
+        }, [
+            E('section', { 'class': 'cbi-section', 'style': 'flex:1 1 14rem;min-width:0;' }, [
                 E('h3', { 'style': 'margin-top:0;' }, _('Categories')),
                 categoryFilter, categoryList
             ]),
-            E('section', { 'class': 'cbi-section', 'style': 'flex:3 1 28rem; min-width:0;' }, [
-                title, ruleControls, body
+            E('section', { 'class': 'cbi-section', 'style': 'flex:3 1 28rem;min-width:0;' }, [
+                title, browseControls, output
             ])
         ]);
 
-        function showError(error) {
-            nftflowUi.setState(state, 'error', nftflowUi.errorMessage(error));
+        var root = E('div', { 'class': 'cbi-map' }, [
+            E('h2', {}, _('GeoData Explorer')),
+            E('p', {}, _('GeoSite / GeoIP rules are searched locally in your browser. The router only transfers the DAT file.')),
+            E('div', { 'class': 'cbi-section' }, [ controls, fileInfo, state ]),
+            layout
+        ]);
+
+        var worker;
+        var ready = false, categories = [], selected = null;
+        var currentPage = 0, pageTotal = 0, displayedCategories = 160;
+        var pending = Object.create(null), serial = 0, revision = 0;
+
+        function setStatus(kind, message) {
+            nftflowUi.setState(state, kind, message);
         }
-        function busy(text) {
-            nftflowUi.setState(state, 'notice', text);
+
+        function send(action, payload, transfers, progress) {
+            if (!worker) return Promise.reject(new Error(_('Web Workers are unavailable.')));
+            var id = ++serial;
+            return new Promise(function(resolve, reject) {
+                pending[id] = { resolve: resolve, reject: reject, progress: progress };
+                try {
+                    worker.postMessage(Object.assign({ action: action, id: id }, payload || {}), transfers || []);
+                } catch (error) {
+                    delete pending[id];
+                    reject(error);
+                }
+            });
         }
+
+        function invalidate() {
+            revision++;
+            if (worker) worker.postMessage({ action: 'cancel' });
+            Object.keys(pending).forEach(function(key) {
+                pending[key].reject(new Error('cancelled'));
+                delete pending[key];
+            });
+            cancelButton.hidden = true;
+            searchButton.disabled = false;
+        }
+
+        function errorMessage(error) {
+            setStatus('error', nftflowUi.errorMessage(error));
+        }
+
+        function updateModes() {
+            regex.disabled = searchMode.value !== 'text';
+            sensitive.disabled = searchMode.value !== 'text';
+            if (regex.disabled) regex.checked = false;
+            if (sensitive.disabled) sensitive.checked = false;
+        }
+
+        function typeOptions(kind) {
+            var types = kind === 'geoip' ? [ 'cidr' ] :
+                [ 'domain', 'full', 'keyword', 'regexp' ];
+            entryType.replaceChildren.apply(entryType,
+                [ E('option', { value: 'all' }, _('All types')) ].concat(types.map(function(type) {
+                    return E('option', { value: type }, type);
+                })));
+        }
+
         function renderCategories() {
             var filter = categoryFilter.value.trim().toLowerCase();
-            var filtered = categories.filter(function(category) {
-                return category.name.indexOf(filter) >= 0;
-            });
-            var visible = filtered.slice(0, visibleCategoryCount);
-            var nodes = visible.map(function(category) {
-                var active = selected === category.name;
-                var item = button(category.name + ' (' + category.count + ')' +
-                    (category.inverse ? ' [inverse]' : ''), active);
-                item.style.display = 'block';
-                item.style.width = '100%';
-                item.style.textAlign = 'left';
-                item.style.margin = '.18rem 0';
-                item.onclick = function() {
-                    selected = category.name;
-                    page = 0;
-                    ruleFilter.value = '';
-                    ruleType.value = 'all';
+            var filtered = categories.filter(function(c) { return c.name.includes(filter); });
+            var visible = filtered.slice(0, displayedCategories);
+            var nodes = visible.map(function(c) {
+                var button = actionButton(c.name + ' (' + c.count + ')' +
+                    (c.inverse ? ' [inverse]' : ''), selected === c.name);
+                button.style.width = '100%';
+                button.style.display = 'block';
+                button.style.textAlign = 'left';
+                button.style.margin = '.15rem 0';
+                button.onclick = function() {
+                    selected = c.name;
+                    currentPage = 0;
+                    entryFilter.value = '';
+                    entryType.value = 'all';
                     renderCategories();
                     browse();
                 };
-                return item;
+                return button;
             });
+
             if (!filtered.length)
                 nodes.push(E('div', {}, _('No categories found.')));
-            else if (filtered.length > visible.length) {
-                var more = button(_('Show more categories'), false);
+            if (filtered.length > visible.length) {
+                var more = actionButton(_('Show more categories'), false);
                 more.style.width = '100%';
-                more.onclick = function() {
-                    visibleCategoryCount += 160;
-                    renderCategories();
-                };
+                more.onclick = function() { displayedCategories += 160; renderCategories(); };
                 nodes.push(more);
-                nodes.push(E('p', { 'style': 'opacity:.7; margin:.5rem 0;' },
+                nodes.push(E('p', { 'style': 'opacity:.7;' },
                     _('%s of %s categories shown').format(visible.length, filtered.length)));
             }
             categoryList.replaceChildren.apply(categoryList, nodes);
         }
-        function browse() {
-            if (!selected) return Promise.resolve();
-            var id = ++pending;
-            searchButton.disabled = false;
-            cancelButton.hidden = true;
-            ruleControls.hidden = false;
-            busy(_('Loading rules...'));
-            title.textContent = kind.value.toUpperCase() + ' / ' + selected;
-            return callBrowse(kind.value, selected, String(page),
-                ruleFilter.value.trim(), ruleType.value).then(check).then(function(result) {
-                if (id !== pending) return;
-                total = result.total || 0;
-                var count = Array.isArray(result.entries) ? result.entries.length : 0;
-                body.replaceChildren(resultsTable(result.entries));
-                previous.disabled = page === 0;
-                next.disabled = (page + 1) * 100 >= total;
-                pageInfo.textContent = total
-                    ? _('%s\u2013%s of %s').format(page * 100 + 1, page * 100 + count, total)
-                    : _('0 results');
-                nftflowUi.setState(state, 'ok', '');
-            }).catch(function(error) { if (id === pending) showError(error); });
+
+        function showSearch(result, kind, mode) {
+            var nodes = [
+                E('p', {}, _('%s matching rules in %s categories').format(
+                    result.total, result.category_total))
+            ];
+            if (result.truncated)
+                nodes.push(E('p', { 'class': 'warning' },
+                    _('Only the first 80 matching categories are displayed.')));
+            if (kind === 'geosite' && mode === 'match')
+                nodes.push(E('p', { 'class': 'notice' },
+                    _('GeoSite regexp rules were not evaluated; these results may be incomplete.')));
+            (result.categories || []).forEach(function(group) {
+                nodes.push(E('h4', { 'style': 'margin-bottom:.25rem;' },
+                    group.name + ' (' + group.total + ')' +
+                    (group.inverse ? ' [inverse]' : '')));
+                nodes.push(resultTable(group.matches));
+                var open = actionButton(_('Browse category'), false);
+                open.style.marginBottom = '.7rem';
+                open.onclick = function() {
+                    selected = group.name;
+                    currentPage = 0;
+                    entryFilter.value = '';
+                    entryType.value = 'all';
+                    renderCategories();
+                    browse();
+                };
+                nodes.push(open);
+            });
+            if (!result.categories || !result.categories.length)
+                nodes.push(E('p', {}, _('No matching rules found.')));
+            output.replaceChildren.apply(output, nodes);
         }
-        function runSearch() {
-            var input = query.value.trim();
-            if (!input) return;
 
-            var id = ++pending;
-            var cursor = { group: '0', position: '0', within: '0' };
-            var searchKind = kind.value, searchMode = mode.value;
-            var searchRegex = regex.checked ? '1' : '0';
-            var searchSensitive = sensitive.checked ? '1' : '0';
-            var groups = [], byName = Object.create(null), allNames = Object.create(null);
-            var totalMatches = 0, categoryCount = 0;
-            var finished = false, percent = 0;
+        function browse() {
+            if (!ready || !selected) return Promise.resolve();
+            invalidate();
+            var turn = revision;
+            cancelButton.hidden = false;
+            title.textContent = dataset.value.toUpperCase() + ' / ' + selected;
+            browseControls.hidden = false;
+            output.replaceChildren(E('p', {}, _('Loading category rules...')));
+            setStatus('notice', _('Reading rules in browser...'));
+            return send('browse', {
+                category: selected, page: currentPage, filter: entryFilter.value.trim(),
+                type: entryType.value
+            }).then(function(data) {
+                if (turn !== revision) return;
+                var result = data.result;
+                output.replaceChildren(resultTable(result.entries));
+                pageTotal = result.total;
+                previous.disabled = currentPage === 0;
+                next.disabled = (currentPage + 1) * PAGE_SIZE >= pageTotal;
+                pageInfo.textContent = result.total
+                    ? _('%s\u2013%s of %s').format(currentPage * PAGE_SIZE + 1,
+                        currentPage * PAGE_SIZE + result.entries.length, result.total)
+                    : _('0 results');
+                setStatus('ok', '');
+            }).catch(function(error) {
+                if (turn === revision) errorMessage(error);
+            }).finally(function() {
+                if (turn === revision) cancelButton.hidden = true;
+            });
+        }
 
+        function search() {
+            if (!ready || !query.value.trim()) return;
+            invalidate();
+            var turn = revision, kind = dataset.value, mode = searchMode.value;
+            cancelButton.hidden = false;
+            searchButton.disabled = true;
             selected = null;
             renderCategories();
+            browseControls.hidden = true;
             title.textContent = _('Global search');
-            ruleControls.hidden = true;
-            body.replaceChildren(E('p', {}, _('Searching the GeoData file...')));
-            searchButton.disabled = true;
-            cancelButton.hidden = false;
+            output.replaceChildren(E('p', {}, _('Searching in browser...')));
+            setStatus('notice', _('Searching in browser... 0%'));
 
-            function renderProgress() {
-                var nodes = [
-                    E('p', {}, _('%s matching rules in %s categories').format(totalMatches, categoryCount))
-                ];
-                if (!finished)
-                    nodes.push(E('p', { 'style': 'opacity:.7;' },
-                        _('Searching... %s%%').format(percent)));
-                if (categoryCount > groups.length)
-                    nodes.push(E('p', { 'class': 'warning' },
-                        _('Showing only the first 80 matching categories.')));
-                if (searchKind === 'geosite' && searchMode === 'match')
-                    nodes.push(E('p', { 'style': 'opacity:.75;' },
-                        _('GeoSite regexp rules are not evaluated in match mode.')));
-
-                groups.forEach(function(group) {
-                    nodes.push(E('h4', { 'style': 'margin-bottom:.3rem;' },
-                        group.name + ' (' + group.total + ')' +
-                        (group.inverse ? ' [inverse]' : '')));
-                    nodes.push(resultsTable(group.matches));
-                    var open = button(_('Browse category'), false);
-                    open.style.marginBottom = '.8rem';
-                    open.onclick = function() {
-                        selected = group.name;
-                        page = 0;
-                        ruleFilter.value = '';
-                        ruleType.value = 'all';
-                        renderCategories();
-                        browse();
-                    };
-                    nodes.push(open);
-                });
-                if (finished && !groups.length)
-                    nodes.push(E('p', {}, _('No matches found.')));
-                body.replaceChildren.apply(body, nodes);
-            }
-
-            function finish() {
-                if (id !== pending) return;
-                finished = true;
-                searchButton.disabled = false;
-                cancelButton.hidden = true;
-                renderProgress();
-                nftflowUi.setState(state, 'ok', '');
-            }
-
-            function searchNext() {
-                if (id !== pending) return Promise.resolve();
-                return callSearch(searchKind, input, searchMode,
-                    searchRegex, searchSensitive,
-                    cursor.group, cursor.position, cursor.within).then(check).then(function(result) {
-                    if (id !== pending) return;
-
-                    totalMatches += result.total || 0;
-                    (result.categories || []).forEach(function(item) {
-                        if (!allNames[item.name]) {
-                            allNames[item.name] = true;
-                            categoryCount++;
-                        }
-                        var group = byName[item.name];
-                        if (!group && groups.length < 80) {
-                            group = { name: item.name, total: 0, inverse: !!item.inverse, matches: [] };
-                            groups.push(group);
-                            byName[item.name] = group;
-                        }
-                        if (!group) return;
-                        group.total += item.total || 0;
-                        (item.matches || []).forEach(function(entry) {
-                            if (group.matches.length < 8) group.matches.push(entry);
-                        });
-                    });
-
-                    percent = Math.min(100, Math.floor((result.progress || 0) * 100));
-                    if (result.done === true) {
-                        finish();
-                        return;
-                    }
-
-                    var next = {
-                        group: String(result.next_group),
-                        position: String(result.next_position),
-                        within: String(result.next_within || '0')
-                    };
-                    if (next.group === cursor.group && next.position === cursor.position)
-                        throw new Error(_('GeoData search did not advance.'));
-                    cursor = next;
-                    busy(_('Searching... %s%%').format(percent));
-                    renderProgress();
-                    return searchNext();
-                });
-            }
-
-            busy(_('Searching... 0%'));
-            return searchNext().catch(function(error) {
-                if (id !== pending) return;
-                searchButton.disabled = false;
-                cancelButton.hidden = true;
-                body.replaceChildren(E('p', { 'class': 'error' },
-                    _('Search failed. Previous category results were cleared.')));
-                showError(error);
+            return send('search', {
+                query: query.value.trim(), mode: mode,
+                regex: regex.checked, sensitive: sensitive.checked
+            }, null, function(progress) {
+                if (turn !== revision) return;
+                var value = progress.total ? Math.round(progress.scanned * 100 / progress.total) : 100;
+                setStatus('notice', _('Searching in browser... %s%%').format(value));
+            }).then(function(data) {
+                if (turn !== revision) return;
+                showSearch(data.result, kind, mode);
+                setStatus('ok', '');
+            }).catch(function(error) {
+                if (turn === revision) {
+                    output.replaceChildren(E('p', { 'class': 'error' }, _('Search failed.')));
+                    errorMessage(error);
+                }
+            }).finally(function() {
+                if (turn === revision) {
+                    cancelButton.hidden = true;
+                    searchButton.disabled = false;
+                }
             });
         }
-        function loadCategories() {
-            var id = ++pending;
-            searchButton.disabled = false;
-            cancelButton.hidden = true;
+
+        function loadDataset(force) {
+            invalidate();
+            var turn = revision, kind = dataset.value;
+            ready = false;
             selected = null;
             categories = [];
-            visibleCategoryCount = 160;
-            page = 0;
-            previous.disabled = true;
-            next.disabled = true;
-            pageInfo.textContent = '';
-            body.replaceChildren(_('Select a category to view its rules.'));
-            ruleControls.hidden = false;
-            title.textContent = _('Rules');
+            displayedCategories = 160;
+            currentPage = 0;
+            pageTotal = 0;
+            fileInfo.textContent = '';
             categoryList.replaceChildren();
-            query.placeholder = kind.value === 'geoip' ? '1.1.1.1' : 'www.youtube.com';
-            busy(_('Loading categories...'));
-            return callList(kind.value).then(check).then(function(result) {
-                if (id !== pending) return;
-                categories = result.categories || [];
-                fileInfo.textContent = result.path + ' \u00b7 ' +
-                    nftflowUi.formatBytes(result.size) + ' \u00b7 ' +
-                    categories.length + ' ' + _('categories');
+            title.textContent = _('Rules');
+            browseControls.hidden = false;
+            previous.disabled = next.disabled = true;
+            pageInfo.textContent = '';
+            output.replaceChildren(E('p', {}, _('Choose a category after the file loads.')));
+            query.placeholder = kind === 'geoip' ? '1.1.1.1' : 'www.youtube.com';
+            typeOptions(kind);
+            cancelButton.hidden = false;
+            setStatus('notice', _('Checking GeoData file...'));
+
+            return callFileInfo(kind).then(check).then(async function(info) {
+                if (turn !== revision) return;
+
+                var cached = force ? null : await cacheOperation(kind, null);
+                if (turn !== revision) return;
+                var blob, reused = cacheMatches(cached, info);
+                if (reused) {
+                    blob = cached.blob;
+                } else {
+                    setStatus('notice', _('Downloading GeoData file to browser...'));
+                    blob = await fs.read_direct(info.read_path, 'blob');
+                    if (!(blob instanceof Blob) || blob.size !== info.size)
+                        throw new Error(_('GeoData file changed during transfer. Reload the file.'));
+                    // Browser-only storage; the router never builds a search index.
+                    cacheOperation(kind, {
+                        version: 1, kind: kind, source: info.source,
+                        size: info.size, mtime: info.mtime, ctime: info.ctime,
+                        blob: blob
+                    });
+                }
+                if (turn !== revision) return;
+                setStatus('notice', _('Indexing GeoData file in browser...'));
+                var buffer = await blob.arrayBuffer();
+                if (turn !== revision) return;
+                var reply = await send('load', { kind: kind, buffer: buffer }, [ buffer ]);
+                if (turn !== revision) return;
+
+                ready = true;
+                categories = reply.result.categories;
+                fileInfo.textContent = info.source + ' \u00b7 ' +
+                    nftflowUi.formatBytes(info.size) + ' \u00b7 ' +
+                    categories.length + ' ' + _('categories') +
+                    (reused ? ' \u00b7 ' + _('Browser cache') : '');
                 renderCategories();
-                nftflowUi.setState(state, 'ok', '');
+                setStatus('ok', '');
             }).catch(function(error) {
-                if (id !== pending) return;
-                fileInfo.textContent = '';
-                showError(error);
+                if (turn === revision) errorMessage(error);
+            }).finally(function() {
+                if (turn === revision) cancelButton.hidden = true;
             });
         }
 
-        function updateMode() {
-            regex.disabled = mode.value !== 'text';
-            sensitive.disabled = mode.value !== 'text';
-            if (regex.disabled) regex.checked = false;
-            if (sensitive.disabled) sensitive.checked = false;
+        try {
+            worker = new Worker(L.resource('nftflow/geodata-worker.js'));
+            worker.onmessage = function(event) {
+                var message = event.data || {};
+                var request = pending[message.id];
+                if (!request) return;
+                if (message.type === 'progress') {
+                    if (request.progress) request.progress(message);
+                } else {
+                    delete pending[message.id];
+                    if (message.type === 'error')
+                        request.reject(new Error(message.error || _('GeoData worker error.')));
+                    else
+                        request.resolve(message);
+                }
+            };
+            worker.onerror = function(event) {
+                var failure = new Error(event.message || _('GeoData Worker failed.'));
+                Object.keys(pending).forEach(function(key) {
+                    pending[key].reject(failure);
+                    delete pending[key];
+                });
+                errorMessage(failure);
+            };
+        } catch (error) {
+            errorMessage(error);
         }
-        mode.onchange = updateMode;
-        kind.onchange = function() { loadCategories(); };
-        searchButton.onclick = runSearch;
-        cancelButton.onclick = function() {
-            ++pending;
-            searchButton.disabled = false;
-            cancelButton.hidden = true;
-            nftflowUi.setState(state, 'notice', _('Search cancelled. Partial results are displayed.'));
-        };
-        query.onkeydown = function(event) { if (event.key === 'Enter') runSearch(); };
-        categoryFilter.oninput = function() { visibleCategoryCount = 160; renderCategories(); };
-        ruleFilter.onkeydown = function(event) {
-            if (event.key === 'Enter') { page = 0; browse(); }
-        };
-        ruleType.onchange = function() { page = 0; browse(); };
-        previous.onclick = function() { if (page > 0) { page--; browse(); } };
-        next.onclick = function() { if ((page + 1) * 100 < total) { page++; browse(); } };
-        updateMode();
 
-        var root = E('div', { 'class': 'cbi-map' }, [
-            E('h2', {}, _('GeoData Explorer')),
-            E('p', {}, _('Browse and search local GeoSite / GeoIP DAT files without modifying firewall rules.')),
-            E('div', { 'class': 'cbi-section' }, [ controls, fileInfo, state ]),
-            main
-        ]);
-        loadCategories();
+        cancelButton.hidden = true;
+        previous.disabled = next.disabled = true;
+        updateModes();
+
+        dataset.onchange = function() { loadDataset(false); };
+        searchMode.onchange = updateModes;
+        categoryFilter.oninput = function() {
+            displayedCategories = 160;
+            renderCategories();
+        };
+        searchButton.onclick = search;
+        cancelButton.onclick = function() {
+            invalidate();
+            setStatus('notice', _('Operation cancelled.'));
+        };
+        reloadButton.onclick = function() { loadDataset(true); };
+        query.onkeydown = function(event) {
+            if (event.key === 'Enter') search();
+        };
+        entryFilter.onkeydown = function(event) {
+            if (event.key === 'Enter') { currentPage = 0; browse(); }
+        };
+        entryType.onchange = function() { currentPage = 0; browse(); };
+        previous.onclick = function() {
+            if (currentPage) { currentPage--; browse(); }
+        };
+        next.onclick = function() {
+            if ((currentPage + 1) * PAGE_SIZE < pageTotal) { currentPage++; browse(); }
+        };
+
+        if (worker) loadDataset(false);
         return root;
     }
 });
