@@ -214,7 +214,7 @@ function browse(kind, tag, page_arg, filter_arg, type_arg) {
         let meta = metadata(raw);
         if (meta.tag != tag) return;
         found = true;
-        inverse ||= meta.inverse;
+        inverse = inverse || meta.inverse;
         visit_entries(raw, function(data) {
             let entry = parse_entry(kind, data);
             if (type_filter && type_filter != 'all' && entry.type != type_filter) return;
