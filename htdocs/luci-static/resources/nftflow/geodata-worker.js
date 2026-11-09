@@ -384,41 +384,11 @@ async function search(request, token) {
                 value: 'Address outside the category CIDRs', attributes: [] });
     });
 
-    // If semantic matching yields nothing, inspect the same decoded rules for
-    // literal text occurrences. This distinguishes an absent DAT entry from a
-    // rule whose type or value does not match the requested hostname.
-    var textCandidates = 0, candidateSamples = [];
-    if (total === 0 && dataset.kind === 'geosite' && mode === 'match') {
-        for (var ci = 0; ci < groups.length; ci++) {
-            var candidateGroup = groups[ci], candidatePos = candidateGroup.from;
-            while (candidatePos < candidateGroup.to) {
-                var candidateField = fieldAt(dataset.bytes, candidatePos, candidateGroup.to);
-                candidatePos = candidateField.next;
-                if (candidateField.num !== 2 || candidateField.wire !== 2) continue;
-                var candidate = domainEntry(dataset.bytes, candidateField.from, candidateField.to, false);
-                if (!candidate.value.toLowerCase().includes(hostname)) continue;
-                textCandidates++;
-                if (candidateSamples.length < 5)
-                    candidateSamples.push({
-                        category: candidateGroup.name,
-                        type: candidate.type,
-                        value: candidate.value
-                    });
-            }
-            if (ci % 40 === 0) {
-                await yieldToMessages();
-                if (token !== generation) return;
-            }
-        }
-    }
-
     if (token !== generation) return;
     var list = Array.from(matches.values()).sort(function(a, b) {
         return a.name.localeCompare(b.name);
     });
     postMessage({ type: 'search', id: request.id, result: {
-        kind: dataset.kind, scanned: ruleIndex, indexed: dataset.total,
-        text_candidates: textCandidates, candidate_samples: candidateSamples,
         total: total, category_total: list.length, truncated: list.length > MAX_GROUPS,
         skipped_regex: invalidRegex, categories: list.slice(0, MAX_GROUPS)
     } });
@@ -445,8 +415,6 @@ self.onmessage = async function(event) {
             } });
         } else {
             if (!dataset) bad('GeoData has not been loaded');
-            if (req.kind !== dataset.kind)
-                bad('GeoData dataset mismatch; reload the selected file');
             if (req.action === 'browse') await browse(req, token);
             else if (req.action === 'search') await search(req, token);
             else bad('Unsupported GeoData operation');
