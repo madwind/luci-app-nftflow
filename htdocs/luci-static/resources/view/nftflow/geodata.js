@@ -15,7 +15,7 @@ var callFileInfo = rpc.declare({
 var CACHE_NAME = 'nftflow-geodata';
 var PAGE_SIZE = 100;
 var DATA_CACHE_VERSION = 2;
-var WORKER_REVISION = '2';
+var WORKER_REVISION = '3';
 
 function check(value) {
     return nftflowUi.requireOk(value, _('Unable to read GeoData file information.'));
@@ -353,14 +353,28 @@ return view.extend({
             if (!result.categories || !result.categories.length) {
                 nodes.push(E('p', {}, _('No matching rules found in the current DAT file.')));
                 if (mode === 'match' && kind === 'geosite') {
+                    if (result.text_candidates > 0) {
+                        nodes.push(E('p', { 'class': 'cbi-section-descr' },
+                            _('%s rule values contain the query text but did not match the domain.').format(result.text_candidates)));
+                        (result.candidate_samples || []).forEach(function(item) {
+                            nodes.push(E('div', {}, [
+                                E('strong', {}, item.category),
+                                ' ',
+                                E('code', {}, item.type),
+                                ' ',
+                                E('code', {}, item.value)
+                            ]));
+                        });
+                    } else {
+                        nodes.push(E('p', { 'class': 'cbi-section-descr' },
+                            _('No decoded GeoSite rule values contain the query text in this DAT file.')));
+                    }
                     var textSearchButton = actionButton(_('Search rule text'), false);
                     textSearchButton.onclick = function() {
                         searchMode.value = 'text';
                         updateModes();
                         search();
                     };
-                    nodes.push(E('p', { 'class': 'cbi-section-descr' },
-                        _('Text search can find rule contents even when they do not match the requested domain.')));
                     nodes.push(textSearchButton);
                 }
             }
