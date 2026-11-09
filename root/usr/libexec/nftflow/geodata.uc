@@ -11,7 +11,7 @@ const MAX_FILE_SIZE = 128 * 1024 * 1024;
 const MAX_ENTRY_SIZE = 32 * 1024 * 1024;
 const PAGE_SIZE = 100;
 const PREVIEW_SIZE = 8;
-const MAX_RESULT_GROUPS = 80;
+const MAX_RESULT_GROUPS = 100;
 const SEARCH_BATCH_ENTRIES = 5000;
 const INDEX_DIRECTORY = '/tmp/nftflow-geodata';
 
@@ -299,6 +299,32 @@ function browse(kind, tag, page_arg, filter_arg, type_arg) {
              page_size: PAGE_SIZE, entries };
 }
 
+// For domain/full/keyword rules, a match requires the rule's complete value to
+// be a substring of the queried hostname. GeoSite's protobuf Domain.value is
+// field 2 (wire type 2), encoded as 0x12 + length + value. Checking these bytes
+// first avoids parsing thousands of unrelated categories. Queries above 24
+// bytes use the normal scanner to bound the number of generated substrings.
+function domain_value_needles(domain) {
+    if (length(domain) > 24) return null;
+    let seen = {}, needles = [];
+    for (let size = 1; size <= length(domain); size++) {
+        for (let i = 0; i + size <= length(domain); i++) {
+            let part = substr(domain, i, size);
+            if (seen[part]) continue;
+            seen[part] = true;
+            push(needles, chr(18, size) + part);
+        }
+    }
+    return needles;
+}
+
+function may_contain_domain_match(raw, needles) {
+    let lower = lc(raw);
+    for (let needle in needles)
+        if (index(lower, needle) >= 0) return true;
+    return false;
+}
+
 function search_entries(kind, query_arg, mode_arg, regex_arg, sensitive_arg,
                         group_arg, position_arg, within_arg) {
     let source = source_info(kind), indexed = load_index(source);
@@ -324,6 +350,7 @@ function search_entries(kind, query_arg, mode_arg, regex_arg, sensitive_arg,
         domain = lc(query);
     }
 
+    let domain_needles = mode == 'match' && kind == 'geosite' ? domain_value_needles(domain) : null;
     let group_index = int(group_arg || '0'), position = int(position_arg || '0');
     let carry_within = within_arg == '1';
     if (group_index < 0 || group_index > length(indexed.groups) || position < 0 ||
@@ -341,8 +368,10 @@ function search_entries(kind, query_arg, mode_arg, regex_arg, sensitive_arg,
             let raw = read_group(file, group, source.size);
             if (position > length(raw)) die('invalid GeoData search cursor position');
 
-            if (position == 0 && mode == 'text' && !regex &&
-                index(sensitive ? raw : lc(raw), sensitive ? query : lc(query)) < 0) {
+            if (position == 0 &&
+                ((mode == 'text' && !regex &&
+                  index(sensitive ? raw : lc(raw), sensitive ? query : lc(query)) < 0) ||
+                 (domain_needles && !may_contain_domain_match(raw, domain_needles)))) {
                 group_index++;
                 group_work++;
                 continue;
