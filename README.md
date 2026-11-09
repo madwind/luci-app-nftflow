@@ -43,6 +43,8 @@ The **GeoData** LuCI page provides an on-demand, read-only explorer for local Xr
 
 The explorer uses the existing rpcd controller and a short-lived ucode worker, without a resident service, file downloads or changes to active firewall sets. Data files are read only when requested. Queries require a configured readable DAT file, and refuse files larger than 128 MiB.
 
+For larger data files, GeoData keeps a compact, automatically invalidated category-offset index under `/tmp/nftflow-geodata/`, avoiding repeated full-file scans when browsing categories. The index is stored in temporary RAM-backed storage, not persistent flash. GeoSite match queries quickly reject categories whose protobuf domain values cannot match the requested hostname. Large searches are processed in bounded batches, with incremental results, progress display and a Cancel button rather than a single long-running LuCI RPC request. Unfiltered category browsing stops after filling the requested page.
+
 ## Runtime model
 
 NftFlow does not install, select or identify the program it manages. Configure the complete shell command in **Settings**, for example `/usr/bin/example --config /etc/nftflow/config.yaml`. NftFlow starts that command with the configured process GID and open-file limit.
