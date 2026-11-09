@@ -74,6 +74,14 @@ return view.extend({
             return value.charAt(0) === '/' ? true : _('GeoIP file must be an absolute path.');
         };
 
+        option = firewall.option(form.Value, 'geosite_file', _('GeoSite file'), _('GeoSite DAT file used by the GeoData Explorer. Enter an absolute path to an existing file.'));
+        option.rmempty = true;
+        option.validate = function(section_id, value) {
+            if (!value)
+                return true;
+            return value.charAt(0) === '/' ? true : _('GeoSite file must be an absolute path.');
+        };
+
         var metrics = map.section(form.NamedSection, 'main', 'nftflow', _('Metrics'));
         metrics.anonymous = true;
 
