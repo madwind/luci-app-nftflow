@@ -2,9 +2,14 @@
     "luci-app-nftflow": {
         "description": "Manage NftFlow runtime, configuration, firewall and routing",
         "read": {
-            "uci": [ "nftflow" ],
+            "uci": [
+                "nftflow"
+            ],
             "ubus": {
-                "log": [ "read", ":subscribe" ],
+                "log": [
+                    "read",
+                    ":subscribe"
+                ],
                 "luci.nftflow": [
                     "status",
                     "service_runtime",
@@ -17,17 +22,35 @@
                     "diagnostic_dns",
                     "diagnostic_request",
                     "diagnostic_firewall",
-                    "geodata_list",
-                    "geodata_browse",
-                    "geodata_search"
+                    "geodata_info"
                 ],
-                "luci.nftflow.package": [ "version" ],
-                "luci.nftflow.metrics": [ "traffic" ],
-                "luci.nftflow.defaults": [ "firewall", "routing" ]
-            }
+                "luci.nftflow.package": [
+                    "version"
+                ],
+                "luci.nftflow.metrics": [
+                    "traffic"
+                ],
+                "luci.nftflow.defaults": [
+                    "firewall",
+                    "routing"
+                ]
+            },
+            "file": {
+                "/var/run/nftflow/geodata/geosite.dat": [
+                    "read"
+                ],
+                "/var/run/nftflow/geodata/geoip.dat": [
+                    "read"
+                ]
+            },
+            "cgi-io": [
+                "download"
+            ]
         },
         "write": {
-            "uci": [ "nftflow" ],
+            "uci": [
+                "nftflow"
+            ],
             "ubus": {
                 "luci.nftflow": [
                     "service_sync",
