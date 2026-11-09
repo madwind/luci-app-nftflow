@@ -75,14 +75,14 @@ function dropdown(items) {
         items.map(function(item) { return E('option', { value: item[0] }, item[1]); }));
 }
 
-function labeled(label, node) {
-    return E('label', { 'style': 'display:flex; flex-direction:column; gap:.25rem; min-width:0;' },
-        [ E('span', { 'style': 'font-size:.9em;' }, label), node ]);
+function inlineField(label, node, className) {
+    return E('label', { 'class': 'geodata-inline-field ' + (className || '') },
+        [ E('span', {}, label), node ]);
 }
 
 function resultTable(entries) {
-    return E('div', { 'style': 'overflow-x:auto;' }, E('table', {
-        'class': 'table', 'style': 'width:100%;'
+    return E('div', { 'class': 'geodata-browse-table' }, E('table', {
+        'class': 'table'
     }, [
         E('thead', {}, E('tr', {}, [
             E('th', {}, _('Type')),
@@ -114,7 +114,7 @@ return view.extend({
         var query = E('input', {
             'type': 'search', 'class': 'cbi-input-text',
             'placeholder': 'www.youtube.com', 'spellcheck': 'false',
-            'autocomplete': 'off', 'style': 'min-width:12rem; flex:1;'
+            'autocomplete': 'off'
         });
         var regex = E('input', { 'type': 'checkbox' });
         var sensitive = E('input', { 'type': 'checkbox' });
@@ -122,53 +122,71 @@ return view.extend({
         var cancelButton = actionButton(_('Cancel'), false);
         var reloadButton = actionButton(_('Reload file'), false);
         var categoryFilter = E('input', {
-            'type': 'search', 'class': 'cbi-input-text',
-            'placeholder': _('Filter categories'), 'style': 'width:100%;box-sizing:border-box;'
+            'type': 'search', 'class': 'cbi-input-text geodata-category-filter',
+            'placeholder': _('Filter categories')
         });
-        var categoryList = E('div', { 'style': 'max-height:32rem;overflow-y:auto;' });
+        var categoryList = E('div', { 'class': 'geodata-category-list' });
         var entryFilter = E('input', {
             'type': 'search', 'class': 'cbi-input-text', 'placeholder': _('Filter entries'),
-            'style': 'min-width:8rem;flex:1;'
+            'style': 'min-width:0;'
         });
         var entryType = dropdown([ [ 'all', _('All types') ] ]);
         var previous = actionButton(_('Previous'), false);
         var next = actionButton(_('Next'), false);
-        var pageInfo = E('span', { 'style': 'opacity:.75;' });
-        var title = E('h3', { 'style': 'margin:.2rem 0;' }, _('Rules'));
-        var output = E('div', {}, _('Select a category to view its rules.'));
-        var state = E('div', { 'aria-live': 'polite' });
-        var fileInfo = E('div', { 'style': 'opacity:.75;overflow-wrap:anywhere;margin-top:.35rem;' });
-        var browseControls = E('div', {
-            'style': 'display:flex; flex-wrap:wrap;gap:.5rem;align-items:center;margin:.6rem 0;'
-        }, [ entryFilter, entryType, previous, pageInfo, next ]);
-
-        var controls = E('div', {
-            'style': 'display:flex;flex-wrap:wrap;gap:.7rem;align-items:end;'
-        }, [
-            labeled(_('Dataset'), dataset),
-            labeled(_('Mode'), searchMode),
-            labeled(_('Query'), query),
-            E('label', {}, [ regex, ' ', _('Regex') ]),
-            E('label', {}, [ sensitive, ' ', _('Case sensitive') ]),
-            searchButton, cancelButton, reloadButton
+        var pageInfo = E('span', { 'class': 'geodata-page-info' });
+        var title = E('h3', {}, _('Rules'));
+        var output = E('div', { 'class': 'geodata-results' }, _('Select a category to view its rules.'));
+        var state = E('div', { 'class': 'geodata-status', 'aria-live': 'polite' });
+        var fileInfo = E('div', { 'class': 'geodata-file-meta' });
+        var browseControls = E('div', { 'class': 'geodata-browse-toolbar' }, [
+            entryFilter, entryType,
+            E('div', { 'class': 'geodata-pagination' }, [ previous, pageInfo, next ])
         ]);
 
-        var layout = E('div', {
-            'style': 'display:flex;flex-wrap:wrap;gap:1rem;align-items:stretch;'
-        }, [
-            E('section', { 'class': 'cbi-section', 'style': 'flex:1 1 14rem;min-width:0;' }, [
-                E('h3', { 'style': 'margin-top:0;' }, _('Categories')),
+        reloadButton.classList.add('geodata-reload');
+        var sourceBar = E('section', { 'class': 'geodata-panel geodata-source' }, [
+            E('h3', { 'class': 'geodata-section-label' }, [
+                E('span', { 'class': 'geodata-section-icon', 'aria-hidden': 'true' }, '\u25a4'),
+                _('Data Source')
+            ]),
+            inlineField(_('Dataset'), dataset, 'geodata-dataset-field'),
+            fileInfo,
+            reloadButton
+        ]);
+        var searchBar = E('section', { 'class': 'geodata-panel geodata-search' }, [
+            E('h3', { 'class': 'geodata-section-label' }, [
+                E('span', { 'class': 'geodata-section-icon', 'aria-hidden': 'true' }, '\u2315'),
+                _('Search')
+            ]),
+            inlineField(_('Mode'), searchMode, 'geodata-mode-field'),
+            inlineField(_('Query'), query, 'geodata-query-field'),
+            E('div', { 'class': 'geodata-toggle-group' }, [
+                E('label', {}, [ regex, _('Regex') ]),
+                E('label', {}, [ sensitive, _('Case sensitive') ])
+            ]),
+            E('div', { 'class': 'geodata-actions' }, [ searchButton, cancelButton ])
+        ]);
+
+        var layout = E('div', { 'class': 'geodata-layout' }, [
+            E('section', { 'class': 'geodata-panel geodata-sidebar' }, [
+                E('h3', { 'class': 'geodata-panel-heading' }, _('Categories')),
                 categoryFilter, categoryList
             ]),
-            E('section', { 'class': 'cbi-section', 'style': 'flex:3 1 28rem;min-width:0;' }, [
-                title, browseControls, output
+            E('section', { 'class': 'geodata-panel geodata-main' }, [
+                E('header', { 'class': 'geodata-results-heading' }, title),
+                browseControls,
+                output
             ])
         ]);
 
-        var root = E('div', { 'class': 'cbi-map' }, [
+        var root = E('div', { 'class': 'cbi-map nftflow-geodata' }, [
+            E('link', { 'rel': 'stylesheet', 'href': L.resource('nftflow/geodata.css') }),
             E('h2', {}, _('GeoData Explorer')),
-            E('p', {}, _('GeoSite / GeoIP rules are searched locally in your browser. The router only transfers the DAT file.')),
-            E('div', { 'class': 'cbi-section' }, [ controls, fileInfo, state ]),
+            E('p', { 'class': 'geodata-intro' },
+                _('GeoSite / GeoIP rules are searched locally in your browser. The router only transfers the DAT file.')),
+            sourceBar,
+            searchBar,
+            state,
             layout
         ]);
 
@@ -233,10 +251,7 @@ return view.extend({
             var nodes = visible.map(function(c) {
                 var button = actionButton(c.name + ' (' + c.count + ')' +
                     (c.inverse ? ' [inverse]' : ''), selected === c.name);
-                button.style.width = '100%';
-                button.style.display = 'block';
-                button.style.textAlign = 'left';
-                button.style.margin = '.15rem 0';
+                button.classList.add('geodata-category-item');
                 button.onclick = function() {
                     selected = c.name;
                     currentPage = 0;
@@ -252,7 +267,7 @@ return view.extend({
                 nodes.push(E('div', {}, _('No categories found.')));
             if (filtered.length > visible.length) {
                 var more = actionButton(_('Show more categories'), false);
-                more.style.width = '100%';
+                more.classList.add('geodata-more');
                 more.onclick = function() { displayedCategories += 160; renderCategories(); };
                 nodes.push(more);
                 nodes.push(E('p', { 'style': 'opacity:.7;' },
@@ -263,22 +278,23 @@ return view.extend({
 
         function showSearch(result, kind, mode) {
             var nodes = [
-                E('p', {}, _('%s matching rules in %s categories').format(
-                    result.total, result.category_total))
+                E('div', { 'class': 'geodata-result-summary' }, [
+                    E('strong', {}, String(result.total)),
+                    _(' matching rules in '),
+                    E('strong', {}, String(result.category_total)),
+                    _(' categories')
+                ])
             ];
             if (result.truncated)
-                nodes.push(E('p', { 'class': 'warning' },
+                nodes.push(E('p', { 'class': 'geodata-caveat' },
                     _('Only the first 80 matching categories are displayed.')));
             if (kind === 'geosite' && mode === 'match')
-                nodes.push(E('p', { 'class': 'notice' },
+                nodes.push(E('p', { 'class': 'geodata-caveat' },
                     _('GeoSite regexp rules were not evaluated; these results may be incomplete.')));
-            (result.categories || []).forEach(function(group) {
-                nodes.push(E('h4', { 'style': 'margin-bottom:.25rem;' },
-                    group.name + ' (' + group.total + ')' +
-                    (group.inverse ? ' [inverse]' : '')));
-                nodes.push(resultTable(group.matches));
+
+            var cards = (result.categories || []).map(function(group) {
                 var open = actionButton(_('Browse category'), false);
-                open.style.marginBottom = '.7rem';
+                open.classList.add('geodata-open');
                 open.onclick = function() {
                     selected = group.name;
                     currentPage = 0;
@@ -287,9 +303,35 @@ return view.extend({
                     renderCategories();
                     browse();
                 };
-                nodes.push(open);
+                var preview = Array.isArray(group.matches) ? group.matches : [];
+                var rows = preview.map(function(item) {
+                    var parts = [
+                        E('span', { 'class': 'geodata-rule-type' }, item.type || ''),
+                        E('code', { 'class': 'geodata-rule-value' }, item.value || '')
+                    ];
+                    if (item.attributes && item.attributes.length)
+                        parts.push(E('span', { 'class': 'geodata-rule-attributes' },
+                            item.attributes.join(', ')));
+                    return E('div', { 'class': 'geodata-preview-row' }, parts);
+                });
+                if (group.total > preview.length)
+                    rows.push(E('div', { 'class': 'geodata-preview-overflow' },
+                        _('Showing first %s of %s matching rules').format(preview.length, group.total)));
+                return E('section', { 'class': 'geodata-result-card' }, [
+                    E('div', { 'class': 'geodata-result-card-header' }, [
+                        E('div', { 'class': 'geodata-result-name' }, [
+                            E('span', {}, group.name),
+                            E('span', { 'class': 'geodata-result-count' }, String(group.total)),
+                            group.inverse ? E('span', { 'class': 'geodata-rule-attributes' }, _('Inverse')) : ''
+                        ]),
+                        open
+                    ]),
+                    E('div', { 'class': 'geodata-preview-list' }, rows)
+                ]);
             });
-            if (!result.categories || !result.categories.length)
+            if (cards.length)
+                nodes.push(E('div', { 'class': 'geodata-search-results' }, cards));
+            else
                 nodes.push(E('p', {}, _('No matching rules found.')));
             output.replaceChildren.apply(output, nodes);
         }
@@ -299,7 +341,7 @@ return view.extend({
             invalidate();
             var turn = revision;
             cancelButton.hidden = false;
-            title.textContent = dataset.value.toUpperCase() + ' / ' + selected;
+            title.textContent = (dataset.value === 'geosite' ? 'GeoSite' : 'GeoIP') + ' / ' + selected;
             browseControls.hidden = false;
             output.replaceChildren(E('p', {}, _('Loading category rules...')));
             setStatus('notice', _('Reading rules in browser...'));
@@ -374,7 +416,7 @@ return view.extend({
             fileInfo.textContent = '';
             categoryList.replaceChildren();
             title.textContent = _('Rules');
-            browseControls.hidden = false;
+            browseControls.hidden = true;
             previous.disabled = next.disabled = true;
             pageInfo.textContent = '';
             output.replaceChildren(E('p', {}, _('Choose a category after the file loads.')));
@@ -454,6 +496,7 @@ return view.extend({
         }
 
         cancelButton.hidden = true;
+        browseControls.hidden = true;
         previous.disabled = next.disabled = true;
         updateModes();
 
