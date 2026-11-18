@@ -104,17 +104,7 @@ function byteLength(value) {
     return encodeURIComponent(value).replace(/%[0-9A-F]{2}/g, 'x').length;
 }
 
-function boundedLines(lines, maxLines) {
-    var lineLimit = Math.max(0, Number(maxLines) || 0);
-    if (!lineLimit)
-        return [];
-    return lines.slice(-lineLimit).map(function(line) {
-        return String(line === undefined || line === null ? '' : line);
-    });
-}
-
 return baseclass.extend({
-    boundedLines: boundedLines,
     byteLength: byteLength,
     errorMessage: errorMessage,
     formatBytes: formatBytes,

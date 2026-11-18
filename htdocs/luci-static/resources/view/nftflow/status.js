@@ -52,6 +52,9 @@ var LOG_SOURCE = /^(?:nftflow|nftflowctl)(?:\[\d+\])?:\s*/i;
 var LOG_FETCH_LINES = 1000;
 var LOG_LINES = LOG_FETCH_LINES;
 var LOG_PENDING_MAX = LOG_FETCH_LINES;
+var LOG_MAX_CHARS = 256 * 1024;
+var LOG_RENDER_MS = 250;
+var LOG_FRAME_BATCH = 100;
 var LOG_RECONNECT_MS = 2000;
 
 function numberOrNull(value) {
@@ -155,11 +158,19 @@ function runtimeLogSection(options) {
     var pageVisible = true;
     var followLogs = true;
     var logLines = [];
+    var logChars = 0;
+    var renderedLogLines = [];
+    var renderedVisibleCount = 0;
+    var droppedLogLines = 0;
+    var renderTimer = null;
+    var filterExpression = null;
     var initialLogsLoaded = false;
-    var historySyncInProgress = false;
+    var historyRequest = null;
     var pendingLiveEntries = [];
+    var pendingLogChars = 0;
     var recentLogKeys = Object.create(null);
     var recentLogKeyOrder = [];
+    var recentLogKeyChars = 0;
     var streamController = null;
     var reconnectTimer = null;
     var logsDeferred = true;
@@ -188,86 +199,78 @@ function runtimeLogSection(options) {
         }
     }
 
-    function lineMatchesFilter(line, expression) {
-        return expression === null || (expression !== false && expression.test(line));
-    }
-
-    function filteredLogLines() {
-        var expression = logFilterExpression();
-        if (expression === null)
-            return logLines;
-        if (expression === false)
+    function filteredLogLines(lines) {
+        if (filterExpression === null)
+            return lines;
+        if (filterExpression === false)
             return [];
-        return logLines.filter(function(line) {
-            return lineMatchesFilter(line, expression);
+        return lines.filter(function(line) {
+            return filterExpression.test(line);
         });
     }
 
-    function renderLogs() {
+    function renderLogs(reset) {
+        if (renderTimer !== null) {
+            window.clearTimeout(renderTimer);
+            renderTimer = null;
+        }
+
         var oldScrollTop = logOutput.scrollTop;
         var wasAtBottom = followLogs;
 
-        logOutput.value = filteredLogLines().join('\n');
+        if (reset) {
+            var visible = filteredLogLines(logLines);
+            logOutput.value = visible.join('\n');
+            renderedVisibleCount = visible.length;
+        } else {
+            // Only the retained prefix is already shown. Apply its removals and the new suffix together.
+            var dropped = Math.min(droppedLogLines, renderedLogLines.length);
+            var retained = renderedLogLines.length - dropped;
+            var droppedVisible = filteredLogLines(renderedLogLines.slice(0, dropped));
+            var retainedVisible = renderedVisibleCount - droppedVisible.length;
+            var appendedVisible = filteredLogLines(logLines.slice(retained));
+
+            if (droppedVisible.length) {
+                var oldScrollHeight = wasAtBottom ? 0 : logOutput.scrollHeight;
+                var removeChars = droppedVisible.join('\n').length + (retainedVisible ? 1 : 0);
+                logOutput.setRangeText('', 0, removeChars, 'preserve');
+                if (!wasAtBottom) {
+                    var removedHeight = Math.max(0, oldScrollHeight - logOutput.scrollHeight);
+                    oldScrollTop = Math.max(0, oldScrollTop - removedHeight);
+                }
+            }
+
+            if (appendedVisible.length) {
+                var appendText = (retainedVisible ? '\n' : '') + appendedVisible.join('\n');
+                logOutput.setRangeText(appendText, logOutput.value.length, logOutput.value.length, 'preserve');
+            }
+            renderedVisibleCount = retainedVisible + appendedVisible.length;
+        }
+
+        renderedLogLines = logLines.slice();
+        droppedLogLines = 0;
+
         if (wasAtBottom)
             logOutput.scrollTop = logOutput.scrollHeight;
         else
             logOutput.scrollTop = oldScrollTop;
     }
 
-    function appendRenderedLogLine(line) {
-        var previous = logLines;
-        var next = nftflowUi.boundedLines(previous.concat([ line ]), LOG_LINES);
-        var retained = Math.max(0, next.length - 1);
-        var dropped = previous.length - retained;
-        var canAppend = dropped >= 0 && next.length > 0 && next[next.length - 1] === line;
-        var expression = logFilterExpression();
-
-        logLines = next;
-
-        if (canAppend) {
-            for (var index = 0; index < retained; index++) {
-                if (previous[dropped + index] !== next[index]) {
-                    canAppend = false;
-                    break;
-                }
-            }
-        }
-
-        if (!canAppend || typeof logOutput.setRangeText !== 'function' || expression === false) {
-            renderLogs();
+    function scheduleLogRender() {
+        if (renderTimer !== null || !pageVisible)
             return;
+        renderTimer = window.setTimeout(function() {
+            renderLogs(false);
+        }, LOG_RENDER_MS);
+    }
+
+    function appendLogLine(line) {
+        logLines.push(line);
+        logChars += line.length + 1;
+        while (logLines.length > LOG_LINES || logChars > LOG_MAX_CHARS) {
+            logChars -= logLines.shift().length + 1;
+            droppedLogLines++;
         }
-
-        var oldScrollTop = logOutput.scrollTop;
-        var oldScrollHeight = logOutput.scrollHeight;
-        var wasAtBottom = followLogs;
-        var droppedVisible = [];
-        var retainedVisible = 0;
-
-        for (var i = 0; i < previous.length; i++) {
-            if (!lineMatchesFilter(previous[i], expression))
-                continue;
-            if (i < dropped)
-                droppedVisible.push(previous[i]);
-            else
-                retainedVisible++;
-        }
-
-        if (droppedVisible.length) {
-            var removeChars = droppedVisible.join('\n').length + (retainedVisible ? 1 : 0);
-            logOutput.setRangeText('', 0, removeChars, 'preserve');
-        }
-
-        var removedHeight = Math.max(0, oldScrollHeight - logOutput.scrollHeight);
-        if (lineMatchesFilter(line, expression)) {
-            var appendText = (logOutput.value ? '\n' : '') + line;
-            logOutput.setRangeText(appendText, logOutput.value.length, logOutput.value.length, 'preserve');
-        }
-
-        if (wasAtBottom)
-            logOutput.scrollTop = logOutput.scrollHeight;
-        else
-            logOutput.scrollTop = Math.max(0, oldScrollTop - removedHeight);
     }
 
     function isRelevantLogEntry(entry) {
@@ -275,10 +278,14 @@ function runtimeLogSection(options) {
         return LOG_SOURCE.test(message);
     }
 
+    function boundedLogMessage(message) {
+        return message.length >= LOG_MAX_CHARS ? message.slice(0, LOG_MAX_CHARS - 2) + '…' : message;
+    }
+
     function logEntryKey(entry) {
         return String(entry && entry.time != null ? entry.time : '') + '\n' +
             String(entry && entry.priority != null ? entry.priority : '') + '\n' +
-            String(entry && entry.msg != null ? entry.msg : '');
+            boundedLogMessage(entry && entry.msg != null ? String(entry.msg) : '');
     }
 
     function rememberLogEntry(entry) {
@@ -288,54 +295,51 @@ function runtimeLogSection(options) {
 
         recentLogKeys[key] = true;
         recentLogKeyOrder.push(key);
-        while (recentLogKeyOrder.length > LOG_FETCH_LINES * 2)
-            delete recentLogKeys[recentLogKeyOrder.shift()];
+        recentLogKeyChars += key.length;
+        while (recentLogKeyOrder.length > LOG_FETCH_LINES * 2 || recentLogKeyChars > LOG_MAX_CHARS * 2) {
+            var removed = recentLogKeyOrder.shift();
+            recentLogKeyChars -= removed.length;
+            delete recentLogKeys[removed];
+        }
         return true;
     }
 
     function queuePendingLogEntry(entry) {
         pendingLiveEntries.push(entry);
-        if (pendingLiveEntries.length > LOG_PENDING_MAX)
-            pendingLiveEntries.splice(0, pendingLiveEntries.length - LOG_PENDING_MAX);
-    }
-
-    function appendKnownLogEntry(entry) {
-        if (!isRelevantLogEntry(entry) || !rememberLogEntry(entry))
-            return;
-        formatLogLines(entry).forEach(appendRenderedLogLine);
+        pendingLogChars += entry.msg.length + 1;
+        while (pendingLiveEntries.length > LOG_PENDING_MAX || pendingLogChars > LOG_MAX_CHARS)
+            pendingLogChars -= pendingLiveEntries.shift().msg.length + 1;
     }
 
     function appendLogEntry(entry) {
         if (!isRelevantLogEntry(entry))
             return;
-        if (!initialLogsLoaded || historySyncInProgress) {
+        entry = {
+            time: entry.time,
+            priority: entry.priority,
+            msg: boundedLogMessage(String(entry.msg))
+        };
+        if (!initialLogsLoaded || historyRequest) {
             queuePendingLogEntry(entry);
             return;
         }
-        appendKnownLogEntry(entry);
+        if (!rememberLogEntry(entry))
+            return;
+        formatLogLines(entry).forEach(appendLogLine);
+        scheduleLogRender();
     }
 
     function mergeLogHistory(entries) {
-        var combined = (Array.isArray(entries) ? entries : []).concat(pendingLiveEntries);
+        var history = Array.isArray(entries) ? entries : [];
+        var lastSeen = history.length - 1;
+        // A backfill can reach further back than the deduplication cache.
+        while (lastSeen >= 0 && !recentLogKeys[logEntryKey(history[lastSeen])])
+            lastSeen--;
+        var combined = history.slice(lastSeen + 1).concat(pendingLiveEntries);
         pendingLiveEntries = [];
-        historySyncInProgress = false;
-
-        if (!initialLogsLoaded) {
-            var merged = [];
-            combined.forEach(function(entry) {
-                if (!isRelevantLogEntry(entry) || !rememberLogEntry(entry))
-                    return;
-                formatLogLines(entry).forEach(function(line) {
-                    merged.push(line);
-                });
-            });
-            initialLogsLoaded = true;
-            logLines = nftflowUi.boundedLines(merged, LOG_LINES);
-            renderLogs();
-            return;
-        }
-
-        combined.forEach(appendKnownLogEntry);
+        pendingLogChars = 0;
+        initialLogsLoaded = true;
+        combined.forEach(appendLogEntry);
     }
 
     function syncRecentLogs() {
@@ -345,14 +349,21 @@ function runtimeLogSection(options) {
             deferLogs();
             return Promise.resolve(false);
         }
-        if (historySyncInProgress)
+        if (historyRequest)
             return Promise.resolve(false);
 
-        historySyncInProgress = true;
-        return callLogRead(LOG_FETCH_LINES, false, true).then(function(entries) {
+        var request = callLogRead(LOG_FETCH_LINES, false, true);
+        historyRequest = request;
+        return request.then(function(entries) {
+            if (historyRequest !== request)
+                return false;
+            historyRequest = null;
             mergeLogHistory(entries);
             return true;
-        }).catch(function(error) {
+        }, function(error) {
+            if (historyRequest !== request)
+                return false;
+            historyRequest = null;
             console.warn(error);
             mergeLogHistory([]);
             return false;
@@ -362,7 +373,7 @@ function runtimeLogSection(options) {
     function consumeSseFrame(frame) {
         var eventName = 'message';
         var data = [];
-        frame.split('\n').forEach(function(line) {
+        frame.split(/\r?\n/).forEach(function(line) {
             if (!line || line.charAt(0) === ':') return;
             if (line.indexOf('event:') === 0) eventName = line.slice(6).trim();
             else if (line.indexOf('data:') === 0) data.push(line.slice(5).trimStart());
@@ -371,17 +382,28 @@ function runtimeLogSection(options) {
         try { appendLogEntry(JSON.parse(data.join('\n'))); } catch (error) { console.warn(error); }
     }
 
-    function pump(reader, decoder, controller, state) {
-        return reader.read().then(function(chunk) {
+    async function pump(reader, decoder, controller) {
+        var buffer = '';
+        var frames = 0;
+        var separator = /\r?\n\r?\n/g;
+        while (!controller.signal.aborted) {
+            var chunk = await reader.read();
+            if (controller.signal.aborted) return;
             if (chunk.done) throw new Error('log subscription ended');
-            state.buffer += decoder.decode(chunk.value, { stream: true }).replace(/\r\n/g, '\n');
+            buffer += decoder.decode(chunk.value, { stream: true });
+            var offset = 0;
             var boundary;
-            while ((boundary = state.buffer.indexOf('\n\n')) >= 0) {
-                consumeSseFrame(state.buffer.slice(0, boundary));
-                state.buffer = state.buffer.slice(boundary + 2);
+            while ((boundary = separator.exec(buffer)) !== null) {
+                consumeSseFrame(buffer.slice(offset, boundary.index));
+                offset = separator.lastIndex;
+                if (++frames >= LOG_FRAME_BATCH) {
+                    frames = 0;
+                    await new Promise(function(resolve) { window.setTimeout(resolve, 0); });
+                    if (controller.signal.aborted) return;
+                }
             }
-            if (!controller.signal.aborted) return pump(reader, decoder, controller, state);
-        });
+            buffer = buffer.slice(offset);
+        }
     }
 
     function clearReconnect() {
@@ -395,6 +417,7 @@ function runtimeLogSection(options) {
         clearReconnect();
         if (streamController) streamController.abort();
         streamController = null;
+        historyRequest = null;
     }
 
     function deferLogs() {
@@ -439,11 +462,12 @@ function runtimeLogSection(options) {
             headers: { 'Accept': 'text/event-stream', 'Authorization': 'Bearer ' + rpc.getSessionID() },
             credentials: 'same-origin', cache: 'no-store', signal: controller.signal
         }).then(function(response) {
+            if (controller.signal.aborted) return;
             if (!response.ok || !response.body) throw new Error('log subscription HTTP ' + response.status);
             nftflowUi.setState(logState, 'ok', _('Live'));
             if (backfill || !initialLogsLoaded)
                 syncRecentLogs();
-            return pump(response.body.getReader(), new TextDecoder(), controller, { buffer: '' });
+            return pump(response.body.getReader(), new TextDecoder(), controller);
         }).catch(function(error) {
             if (!controller.signal.aborted) {
                 console.warn(error);
@@ -483,7 +507,10 @@ function runtimeLogSection(options) {
     logOutput.addEventListener('scroll', function() {
         followLogs = logOutput.scrollHeight - logOutput.scrollTop - logOutput.clientHeight <= 4;
     });
-    logFilter.addEventListener('input', renderLogs);
+    logFilter.addEventListener('input', function() {
+        filterExpression = logFilterExpression();
+        renderLogs(true);
+    });
 
     var logStreamButton = E('button', { 'class': 'btn cbi-button cbi-button-action', 'type': 'button' }, _('Stop'));
     logStreamButton.addEventListener('click', ui.createHandlerFn(logStreamButton, function() {
@@ -491,6 +518,8 @@ function runtimeLogSection(options) {
         logStreamButton.textContent = logStopped ? _('Start') : _('Stop');
         if (logStopped) {
             stopLogStream();
+            if (renderTimer !== null)
+                renderLogs(false);
             nftflowUi.setState(logState, 'notice', _('Stopped'));
             return Promise.resolve();
         }
@@ -501,6 +530,10 @@ function runtimeLogSection(options) {
     window.addEventListener('pagehide', function() {
         pageVisible = false;
         stopLogStream();
+        if (renderTimer !== null) {
+            window.clearTimeout(renderTimer);
+            renderTimer = null;
+        }
     }, { once: true });
 
     var root = E('div', { 'class': 'cbi-section' }, [
