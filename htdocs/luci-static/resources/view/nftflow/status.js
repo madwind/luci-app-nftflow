@@ -209,35 +209,40 @@ function runtimeLogSection(options) {
         });
     }
 
-    function renderLogs(reset) {
+    function cancelLogRender() {
         if (renderTimer !== null) {
             window.clearTimeout(renderTimer);
             renderTimer = null;
         }
+    }
 
-        var oldScrollTop = logOutput.scrollTop;
-        var wasAtBottom = followLogs;
+    function atLogBottom() {
+        return logOutput.scrollHeight - logOutput.scrollTop - logOutput.clientHeight <= 4;
+    }
 
+    function renderLogs(reset) {
+        cancelLogRender();
+        if (!reset && (!followLogs || !atLogBottom())) {
+            followLogs = false;
+            return;
+        }
+
+        var oldScrollTop = followLogs ? 0 : logOutput.scrollTop;
         if (reset) {
             var visible = filteredLogLines(logLines);
             logOutput.value = visible.join('\n');
             renderedVisibleCount = visible.length;
         } else {
             // Only the retained prefix is already shown. Apply its removals and the new suffix together.
-            var dropped = Math.min(droppedLogLines, renderedLogLines.length);
+            var dropped = droppedLogLines;
             var retained = renderedLogLines.length - dropped;
             var droppedVisible = filteredLogLines(renderedLogLines.slice(0, dropped));
             var retainedVisible = renderedVisibleCount - droppedVisible.length;
             var appendedVisible = filteredLogLines(logLines.slice(retained));
 
             if (droppedVisible.length) {
-                var oldScrollHeight = wasAtBottom ? 0 : logOutput.scrollHeight;
                 var removeChars = droppedVisible.join('\n').length + (retainedVisible ? 1 : 0);
                 logOutput.setRangeText('', 0, removeChars, 'preserve');
-                if (!wasAtBottom) {
-                    var removedHeight = Math.max(0, oldScrollHeight - logOutput.scrollHeight);
-                    oldScrollTop = Math.max(0, oldScrollTop - removedHeight);
-                }
             }
 
             if (appendedVisible.length) {
@@ -250,14 +255,16 @@ function runtimeLogSection(options) {
         renderedLogLines = logLines.slice();
         droppedLogLines = 0;
 
-        if (wasAtBottom)
+        if (followLogs) {
             logOutput.scrollTop = logOutput.scrollHeight;
-        else
+        } else {
             logOutput.scrollTop = oldScrollTop;
+            followLogs = atLogBottom();
+        }
     }
 
     function scheduleLogRender() {
-        if (renderTimer !== null || !pageVisible)
+        if (!followLogs || renderTimer !== null || !pageVisible)
             return;
         renderTimer = window.setTimeout(function() {
             renderLogs(false);
@@ -269,7 +276,8 @@ function runtimeLogSection(options) {
         logChars += line.length + 1;
         while (logLines.length > LOG_LINES || logChars > LOG_MAX_CHARS) {
             logChars -= logLines.shift().length + 1;
-            droppedLogLines++;
+            if (droppedLogLines < renderedLogLines.length)
+                droppedLogLines++;
         }
     }
 
@@ -505,7 +513,12 @@ function runtimeLogSection(options) {
     }
 
     logOutput.addEventListener('scroll', function() {
-        followLogs = logOutput.scrollHeight - logOutput.scrollTop - logOutput.clientHeight <= 4;
+        var wasFollowing = followLogs;
+        followLogs = atLogBottom();
+        if (!followLogs)
+            cancelLogRender();
+        else if (!wasFollowing)
+            renderLogs(false);
     });
     logFilter.addEventListener('input', function() {
         filterExpression = logFilterExpression();
@@ -530,10 +543,7 @@ function runtimeLogSection(options) {
     window.addEventListener('pagehide', function() {
         pageVisible = false;
         stopLogStream();
-        if (renderTimer !== null) {
-            window.clearTimeout(renderTimer);
-            renderTimer = null;
-        }
+        cancelLogRender();
     }, { once: true });
 
     var root = E('div', { 'class': 'cbi-section' }, [
