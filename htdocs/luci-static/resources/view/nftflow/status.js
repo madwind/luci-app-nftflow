@@ -53,7 +53,8 @@ var LOG_FETCH_LINES = 1000;
 var LOG_LINES = LOG_FETCH_LINES;
 var LOG_PENDING_MAX = LOG_FETCH_LINES;
 var LOG_MAX_CHARS = 256 * 1024;
-var LOG_RENDER_MS = 250;
+var LOG_ROW_HEIGHT = 20;
+var LOG_OVERSCAN = 6;
 var LOG_FRAME_BATCH = 100;
 var LOG_RECONNECT_MS = 2000;
 
@@ -148,22 +149,28 @@ function runtimeLogSection(options) {
         'aria-label': _('Filter runtime log by regular expression'),
         'title': _('Enter the regular expression without /.../.')
     });
-    var logOutput = E('textarea', {
-        'id': 'nftflow-runtime-log', 'class': 'cbi-input-text',
-        'style': 'display: block; width: 100%; min-height: 22em; box-sizing: border-box; white-space: pre-wrap; overflow-wrap: anywhere;',
-        'rows': 20, 'wrap': 'soft', 'spellcheck': 'false', 'readonly': true,
-        'role': 'log', 'aria-label': _('NftFlow runtime log')
-    });
+    var logRows = E('div', { 'style': 'min-width: 100%; width: max-content; font-family: monospace; white-space: pre;' });
+    var logOutput = E('div', {
+        'id': 'nftflow-runtime-log', 'class': 'cbi-input-text', 'tabindex': '0',
+        'style': 'display: block; width: 100%; height: 22em; padding: 0; box-sizing: border-box; overflow-x: scroll; overflow-y: auto; overflow-anchor: none;',
+        'role': 'region', 'aria-label': _('NftFlow runtime log')
+    }, logRows);
+    var jumpButton = E('button', { 'class': 'btn cbi-button cbi-button-action', 'type': 'button' }, _('Jump to latest'));
+    var copyButton = E('button', { 'class': 'btn cbi-button cbi-button-action', 'type': 'button', 'disabled': true }, _('Copy all'));
     var logStopped = false;
     var pageVisible = true;
-    var followLogs = true;
     var logLines = [];
     var logChars = 0;
-    var renderedLogLines = [];
-    var renderedVisibleCount = 0;
-    var droppedLogLines = 0;
-    var renderTimer = null;
     var filterExpression = null;
+    var matchingLogLines = [];
+    var shownLogLines = [];
+    var unseenLogLines = 0;
+    var logViewDirty = false;
+    var jumpToLatest = false;
+    var mountedRows = new Map();
+    var renderedStart = 0;
+    var renderedEnd = 0;
+    var renderFrame = null;
     var initialLogsLoaded = false;
     var historyRequest = null;
     var pendingLiveEntries = [];
@@ -199,85 +206,127 @@ function runtimeLogSection(options) {
         }
     }
 
-    function filteredLogLines(lines) {
-        if (filterExpression === null)
-            return lines;
-        if (filterExpression === false)
-            return [];
-        return lines.filter(function(line) {
-            return filterExpression.test(line);
+    function matchesLogFilter(line) {
+        return filterExpression === null || (filterExpression !== false && filterExpression.test(line.text));
+    }
+
+    function renderLogRows(start, end) {
+        var lines = shownLogLines.slice(start, end);
+        var visible = new Set(lines);
+        mountedRows.forEach(function(node, line) {
+            if (!visible.has(line)) {
+                node.remove();
+                mountedRows.delete(line);
+            }
         });
-    }
 
-    function cancelLogRender() {
-        if (renderTimer !== null) {
-            window.clearTimeout(renderTimer);
-            renderTimer = null;
+        // Reuse rows that stay visible so appending a line does not rebuild the viewport.
+        var next = null;
+        for (var i = lines.length - 1; i >= 0; i--) {
+            var line = lines[i];
+            var node = mountedRows.get(line);
+            if (!node) {
+                node = E('div', {
+                    'style': 'height: ' + LOG_ROW_HEIGHT + 'px; line-height: ' + LOG_ROW_HEIGHT + 'px; padding: 0 .5em;'
+                }, document.createTextNode(line.text));
+                logRows.insertBefore(node, next);
+                mountedRows.set(line, node);
+            }
+            next = node;
         }
+
+        logRows.style.paddingTop = (start * LOG_ROW_HEIGHT) + 'px';
+        logRows.style.paddingBottom = ((shownLogLines.length - end) * LOG_ROW_HEIGHT) + 'px';
+        renderedStart = start;
+        renderedEnd = end;
     }
 
-    function atLogBottom() {
-        return logOutput.scrollHeight - logOutput.scrollTop - logOutput.clientHeight <= 4;
-    }
-
-    function renderLogs(reset) {
-        cancelLogRender();
-        if (!reset && (!followLogs || !atLogBottom())) {
-            followLogs = false;
+    function renderLogs() {
+        renderFrame = null;
+        var height = logOutput.clientHeight;
+        if (!height)
             return;
+
+        var scrollTop = logOutput.scrollTop;
+        var followLogs = jumpToLatest || shownLogLines.length * LOG_ROW_HEIGHT - height - scrollTop <= 4;
+        var changed = followLogs && logViewDirty;
+        if (changed) {
+            // Keep the same bounded snapshot while the user is reading away from the live tail.
+            shownLogLines = matchingLogLines.slice();
+            unseenLogLines = 0;
+            logViewDirty = false;
+            copyButton.disabled = shownLogLines.length === 0;
         }
+        jumpToLatest = false;
 
-        var oldScrollTop = followLogs ? 0 : logOutput.scrollTop;
-        if (reset) {
-            var visible = filteredLogLines(logLines);
-            logOutput.value = visible.join('\n');
-            renderedVisibleCount = visible.length;
-        } else {
-            // Only the retained prefix is already shown. Apply its removals and the new suffix together.
-            var dropped = droppedLogLines;
-            var retained = renderedLogLines.length - dropped;
-            var droppedVisible = filteredLogLines(renderedLogLines.slice(0, dropped));
-            var retainedVisible = renderedVisibleCount - droppedVisible.length;
-            var appendedVisible = filteredLogLines(logLines.slice(retained));
+        var top = followLogs ? Math.max(0, shownLogLines.length * LOG_ROW_HEIGHT - height) : scrollTop;
+        var start = Math.max(0, Math.floor(top / LOG_ROW_HEIGHT) - LOG_OVERSCAN);
+        var end = Math.min(shownLogLines.length, Math.ceil((top + height) / LOG_ROW_HEIGHT) + LOG_OVERSCAN);
+        if (changed || start !== renderedStart || end !== renderedEnd)
+            renderLogRows(start, end);
+        if (followLogs && top !== scrollTop)
+            logOutput.scrollTop = top;
 
-            if (droppedVisible.length) {
-                var removeChars = droppedVisible.join('\n').length + (retainedVisible ? 1 : 0);
-                logOutput.setRangeText('', 0, removeChars, 'preserve');
-            }
-
-            if (appendedVisible.length) {
-                var appendText = (retainedVisible ? '\n' : '') + appendedVisible.join('\n');
-                logOutput.setRangeText(appendText, logOutput.value.length, logOutput.value.length, 'preserve');
-            }
-            renderedVisibleCount = retainedVisible + appendedVisible.length;
-        }
-
-        renderedLogLines = logLines.slice();
-        droppedLogLines = 0;
-
-        if (followLogs) {
-            logOutput.scrollTop = logOutput.scrollHeight;
-        } else {
-            logOutput.scrollTop = oldScrollTop;
-            followLogs = atLogBottom();
-        }
+        var jumpLabel = unseenLogLines ? _('Jump to latest (%d new)').format(unseenLogLines) : _('Jump to latest');
+        if (jumpButton.textContent !== jumpLabel)
+            jumpButton.textContent = jumpLabel;
     }
 
     function scheduleLogRender() {
-        if (!followLogs || renderTimer !== null || !pageVisible)
-            return;
-        renderTimer = window.setTimeout(function() {
-            renderLogs(false);
-        }, LOG_RENDER_MS);
+        if (renderFrame === null && pageVisible)
+            renderFrame = window.requestAnimationFrame(renderLogs);
     }
 
-    function appendLogLine(line) {
+    function showLatestLogs() {
+        jumpToLatest = true;
+        scheduleLogRender();
+    }
+
+    async function copyLogs() {
+        if (!shownLogLines.length)
+            return;
+        var text = shownLogLines.map(function(line) { return line.text; }).join('\n');
+        if (navigator.clipboard) {
+            try {
+                await navigator.clipboard.writeText(text);
+                ui.addNotification(null, E('p', {}, _('Runtime log copied.')));
+                return;
+            } catch (error) {}
+        }
+
+        var field = E('textarea', {
+            'class': 'cbi-input-text', 'style': 'width: 100%; box-sizing: border-box;',
+            'rows': 12, 'readonly': true, 'wrap': 'off', 'aria-label': _('NftFlow runtime log')
+        });
+        field.value = text;
+        ui.showModal(_('Copy all'), [
+            E('p', {}, _('Copy the selected log text.')),
+            field,
+            E('div', { 'class': 'right' }, E('button', {
+                'class': 'btn cbi-button cbi-button-neutral', 'type': 'button',
+                'click': function() { ui.hideModal(); }
+            }, _('Close')))
+        ]);
+        field.focus();
+        field.select();
+    }
+
+    function appendLogLine(text) {
+        var line = { text: text };
         logLines.push(line);
-        logChars += line.length + 1;
+        logChars += text.length + 1;
+        if (matchesLogFilter(line)) {
+            matchingLogLines.push(line);
+            unseenLogLines++;
+            logViewDirty = true;
+        }
         while (logLines.length > LOG_LINES || logChars > LOG_MAX_CHARS) {
-            logChars -= logLines.shift().length + 1;
-            if (droppedLogLines < renderedLogLines.length)
-                droppedLogLines++;
+            var removed = logLines.shift();
+            logChars -= removed.text.length + 1;
+            if (matchingLogLines[0] === removed) {
+                matchingLogLines.shift();
+                logViewDirty = true;
+            }
         }
     }
 
@@ -334,7 +383,8 @@ function runtimeLogSection(options) {
         if (!rememberLogEntry(entry))
             return;
         formatLogLines(entry).forEach(appendLogLine);
-        scheduleLogRender();
+        if (logViewDirty)
+            scheduleLogRender();
     }
 
     function mergeLogHistory(entries) {
@@ -512,18 +562,17 @@ function runtimeLogSection(options) {
             resumeLogs();
     }
 
-    logOutput.addEventListener('scroll', function() {
-        var wasFollowing = followLogs;
-        followLogs = atLogBottom();
-        if (!followLogs)
-            cancelLogRender();
-        else if (!wasFollowing)
-            renderLogs(false);
-    });
+    var logResizeObserver = new ResizeObserver(scheduleLogRender);
+    logResizeObserver.observe(logOutput);
+    logOutput.addEventListener('scroll', scheduleLogRender, { passive: true });
     logFilter.addEventListener('input', function() {
         filterExpression = logFilterExpression();
-        renderLogs(true);
+        matchingLogLines = logLines.filter(matchesLogFilter);
+        logViewDirty = true;
+        showLatestLogs();
     });
+    jumpButton.addEventListener('click', showLatestLogs);
+    copyButton.addEventListener('click', ui.createHandlerFn(copyButton, copyLogs));
 
     var logStreamButton = E('button', { 'class': 'btn cbi-button cbi-button-action', 'type': 'button' }, _('Stop'));
     logStreamButton.addEventListener('click', ui.createHandlerFn(logStreamButton, function() {
@@ -531,8 +580,6 @@ function runtimeLogSection(options) {
         logStreamButton.textContent = logStopped ? _('Start') : _('Stop');
         if (logStopped) {
             stopLogStream();
-            if (renderTimer !== null)
-                renderLogs(false);
             nftflowUi.setState(logState, 'notice', _('Stopped'));
             return Promise.resolve();
         }
@@ -543,7 +590,9 @@ function runtimeLogSection(options) {
     window.addEventListener('pagehide', function() {
         pageVisible = false;
         stopLogStream();
-        cancelLogRender();
+        logResizeObserver.disconnect();
+        if (renderFrame !== null)
+            window.cancelAnimationFrame(renderFrame);
     }, { once: true });
 
     var root = E('div', { 'class': 'cbi-section' }, [
@@ -552,6 +601,8 @@ function runtimeLogSection(options) {
             logState,
             E('div', { 'style': 'display: inline-flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-left: auto;' }, [
                 E('label', { 'style': 'display: inline-flex; align-items: center; gap: .5rem;' }, [ _('Filter'), logFilter ]),
+                jumpButton,
+                copyButton,
                 logStreamButton
             ])
         ]),
